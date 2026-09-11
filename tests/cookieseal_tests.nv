@@ -1,0 +1,167 @@
+// cookieseal_tests.nv — signed cookies, encrypted cookies, and the
+// key rotation that keeps a rotation from logging everybody out.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`.
+//
+// THE CASES ARE THE `cookie` CRATE's SIGNED AND PRIVATE JARS, plus the
+// one its API cannot express: a cookie signed under a key that has
+// since been rotated out of the signing position but is still on the
+// list.  A single-key API has no test for that because it has no way to
+// be in that state, and "we rotated the key and everybody was logged
+// out" is what happens instead.
+//
+// THE CIPHER IS A NAMED PAIR OF FUNCTIONS the test supplies, which is
+// also how a real caller supplies one — there is no AEAD on the
+// registry yet, and this package composes rather than implements.  The
+// two below are NOT a cipher: they are the identity with a constant
+// tag, they exist to exercise the composition, and a test that used
+// them for anything else would be asserting about itself.
+
+use std.test
+use cookieseal
+
+// A stand-in for an AEAD, so the layout and the name binding can be
+// exercised without a cipher on the registry.  Not encryption: the
+// plaintext comes back unchanged, which is exactly why the suite only
+// asserts about the composition around it.
+fn toy_seal(key: Bytes, nonce: Bytes, aad: Bytes, plain: Bytes) -> Bytes
+    plain
+
+fn toy_open(key: Bytes, nonce: Bytes, aad: Bytes, sealed: Bytes) -> ?Bytes
+    Some(sealed)
+
+fn toy_cipher() -> cookieseal.CookieCipher
+    cookieseal.cipher("toy", 32, 12, 16, toy_seal, toy_open)
+
+fn a_key() -> Bytes
+    bytes.zeros(32)
+
+fn another_key() -> Bytes
+    bytes.fill(bytes.zeros(32), 0, 32, 1)
+
+@test
+fn test_a_key_is_a_list_newest_first_and_rotation_is_one_call() [io]
+    test.case("one key is a key set of one")
+    test.assert(cookieseal.key_count(cookieseal.one_key(a_key())) == 1)
+
+    test.case("a rotation puts the new key in front and keeps the old")
+    let k = cookieseal.rotate(cookieseal.one_key(a_key()), another_key())
+    test.assert(cookieseal.key_count(k) == 2)
+
+    test.case("a key is as long as the hash it MACs with")
+    test.assert(cookieseal.key_len() == 32)
+    test.assert(cookieseal.master_len() == 32)
+
+    test.case("a list goes in as written, newest first")
+    test.assert(cookieseal.key_count(cookieseal.keys_of([a_key(), another_key()])) == 2)
+
+@test
+fn test_signing_lets_the_client_read_and_not_change() [io]
+    let k = cookieseal.one_key(a_key())
+
+    test.case("a signed value round-trips, and the key index says which key matched")
+    let sealed = cookieseal.sign("sid", "u=42", k)
+    match cookieseal.verify("sid", sealed, k)
+        Ok(pair) =>
+            test.assert(pair.0 == "u=42")
+            test.assert(pair.1 == 0)
+        Err(_)   => test.assert(false)
+
+    test.case("the client can read it, because that is what signed MEANS")
+    test.assert(cookieseal.peek_signed(sealed) == Some("u=42"))
+
+    test.case("and cannot change it")
+    match cookieseal.verify("sid", sealed + "x", k)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("a value that is not sealed at all is told apart from one that was tampered with")
+    test.assert(cookieseal.is_sealed(sealed))
+    test.assert(cookieseal.is_sealed("plain") == false)
+
+@test
+fn test_the_cookie_name_is_authenticated_and_that_is_the_part_libraries_miss() [io]
+    // A signed `role=user` moved into an `admin` cookie is a valid
+    // `admin` cookie if the MAC covers only the value.
+    let k = cookieseal.one_key(a_key())
+
+    test.case("a value signed for one name does not verify under another")
+    let sealed = cookieseal.sign("role", "user", k)
+    match cookieseal.verify("admin", sealed, k)
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                CookieSealBroken(n) => test.assert(n == "admin")
+                _                   => test.assert(false)
+
+    test.case("and verify takes the name it EXPECTS rather than reading one out of the input")
+    match cookieseal.verify("role", sealed, k)
+        Ok(pair) => test.assert(pair.0 == "user")
+        Err(_)   => test.assert(false)
+
+@test
+fn test_a_rotated_key_still_verifies_which_is_why_rotation_is_in_the_type() [io]
+    let old = cookieseal.one_key(a_key())
+    let sealed_before = cookieseal.sign("sid", "u=42", old)
+    let rotated = cookieseal.rotate(old, another_key())
+
+    test.case("a cookie signed before the rotation still verifies after it")
+    match cookieseal.verify("sid", sealed_before, rotated)
+        Ok(pair) =>
+            test.assert(pair.0 == "u=42")
+            test.case("and the index says it was the OLD key, which is the number that says when to drop it")
+            test.assert(pair.1 == 1)
+        Err(_)   => test.assert(false)
+
+    test.case("a cookie signed after it verifies under the new key")
+    match cookieseal.verify("sid", cookieseal.sign("sid", "u=42", rotated), rotated)
+        Ok(pair) => test.assert(pair.1 == 0)
+        Err(_)   => test.assert(false)
+
+    test.case("a key that is off the list no longer verifies")
+    match cookieseal.verify("sid", sealed_before, cookieseal.one_key(another_key()))
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_encryption_composes_a_cipher_the_caller_supplies() [io]
+    let k = cookieseal.one_key(a_key())
+    let c = toy_cipher()
+
+    test.case("the nonce is the caller's, because a core package has no randomness")
+    test.assert(cookieseal.nonce_len(c) == 12)
+
+    test.case("an encrypted value round-trips through the caller's own cipher")
+    let nonce = bytes.zeros(12)
+    match cookieseal.encrypt("sid", "internal-42", k, c, nonce)
+        Ok(sealed) =>
+            match cookieseal.decrypt("sid", sealed, k, c)
+                Ok(pair) =>
+                    test.assert(pair.0 == "internal-42")
+                    test.assert(pair.1 == 0)
+                Err(_)   => test.assert(false)
+        Err(_)     => test.assert(false)
+
+    test.case("the cookie NAME is the associated data, so a moved value does not open")
+    match cookieseal.encrypt("sid", "internal-42", k, c, nonce)
+        Ok(sealed) =>
+            match cookieseal.decrypt("other", sealed, k, c)
+                Ok(_)  => test.assert(false)
+                Err(_) => test.assert(true)
+        Err(_)     => test.assert(false)
+
+    test.case("a nonce of the wrong length is refused rather than padded")
+    match cookieseal.encrypt("sid", "x", k, c, bytes.zeros(8))
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_one_secret_becomes_two_keys_because_reusing_one_covers_no_proof() [io]
+    test.case("the signing key and the encryption key are different bytes")
+    let d = cookieseal.derive(a_key())
+    test.assert(bytes.len(d.signing) == 32)
+    test.assert(bytes.len(d.encryption) == 32)
+    test.assert(bytes.to_hex(d.signing) != bytes.to_hex(d.encryption))
+
+    test.case("and neither of them is the master")
+    test.assert(bytes.to_hex(d.signing) != bytes.to_hex(a_key()))

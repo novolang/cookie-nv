@@ -1,0 +1,121 @@
+// cookiewrite.nv — a `Set-Cookie` header written, with the rules
+// enforced rather than documented.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// EVERY WRITER HERE ANSWERS A `Result`, and that is the package's main
+// argument.  A cookie library whose `to_string` cannot fail is one that
+// happily emits `Set-Cookie: __Host-sid=x; Domain=example.com`, which
+// every browser silently drops.  The server then sees a request with no
+// session, concludes the user is logged out, and the failure is three
+// layers away from the line that caused it.  The check costs four
+// comparisons, and `cookieattr.check_attrs` is where they live.
+//
+// A CALLER WHO IS SURE CAN STILL WRITE ANYTHING, with
+// `set_cookie_unchecked` — because a test that wants to produce a
+// malformed header, and a proxy that is passing one through, both
+// exist.  The name says what it skipped.
+//
+// WRITING INTO A CALLER'S BUFFER IS THE OTHER FORM.  A response is
+// assembled into one buffer and a header that allocated a string per
+// cookie would allocate one per cookie per response.  `set_cookie_into`
+// appends and answers the byte count, which is the shape every writer
+// on the grid has.
+
+use civil
+use cookieattr
+
+// Write a `Set-Cookie` header value — everything after `Set-Cookie: `.
+//
+// The value and not the whole line, because a server holds its headers
+// as name/value pairs and a writer that produced `Set-Cookie: …` would
+// have to be sliced apart again.
+//
+// ```novo
+// use cookieattr
+// use cookiewrite
+//
+// fn main() [io]
+//     match cookiewrite.set_cookie("sid", "abc", cookieattr.defaults())
+//         Ok(h)  => println(h)
+//         Err(_) => println("refused")
+// ```
+pub fn set_cookie(name: Str, value: Str,
+                  a: cookieattr.CookieAttrs) -> Result<Str, cookieattr.CookieError> []
+    todo("cookie-nv.cookiewrite.set_cookie")
+
+// Write a `Set-Cookie` value without checking anything.
+//
+// For a proxy passing a header through, and for a test that wants to
+// produce one a browser will drop. The name is the disclosure.
+pub fn set_cookie_unchecked(name: Str, value: Str, a: cookieattr.CookieAttrs) -> Str []
+    todo("cookie-nv.cookiewrite.set_cookie_unchecked")
+
+// Append a `Set-Cookie` value to a buffer the caller owns.
+//
+// Answers the number of bytes appended, or the refusal. The
+// allocation-free form, for a server assembling a response into one
+// buffer.
+pub fn set_cookie_into(name: Str, value: Str, a: cookieattr.CookieAttrs,
+                       mut dst: Cursor) -> Result<Int, cookieattr.CookieError> []
+    todo("cookie-nv.cookiewrite.set_cookie_into")
+
+// How many bytes `set_cookie` would produce.
+//
+// So a caller can size a buffer before writing into one, which is the
+// pair `set_cookie_into` needs to be usable.
+pub fn set_cookie_len(name: Str, value: Str, a: cookieattr.CookieAttrs) -> Int []
+    todo("cookie-nv.cookiewrite.set_cookie_len")
+
+// The header that DELETES a cookie.
+//
+// Deleting a cookie is setting it to an empty value with an expiry in
+// the past, and the attributes that matter are the ones that must
+// MATCH the cookie being deleted: a cookie set with `Domain` and
+// `Path=/app` is not deleted by a header with neither, because the
+// browser keys the cookie on that triple and the deletion lands on a
+// different cookie. That rule is why this is a function rather than a
+// paragraph in a README: the caller passes the attributes it originally
+// set, and this fills in the expiry.
+//
+// ```novo
+// use cookieattr
+// use cookiewrite
+//
+// fn main() [io]
+//     match cookiewrite.delete_cookie("sid", cookieattr.defaults())
+//         Ok(h)  => println(h)
+//         Err(_) => println("refused")
+// ```
+pub fn delete_cookie(name: Str, a: cookieattr.CookieAttrs) -> Result<Str, cookieattr.CookieError> []
+    todo("cookie-nv.cookiewrite.delete_cookie")
+
+// Format an `Expires` value the way RFC 6265 § 4.1.1 requires.
+//
+// One spelling on the way out, however many on the way in: the RFC says
+// a server MUST use the RFC 1123 form — `Sun, 06 Nov 1994 08:49:37 GMT`
+// — and the tolerance in `cookieparse.parse_expires` is for reading
+// other people's headers, not for writing our own.
+pub fn format_expires(at: civil.CivilDateTime) -> Str []
+    todo("cookie-nv.cookiewrite.format_expires")
+
+// Write a `Cookie` REQUEST header value from a list of pairs.
+//
+// The client direction: `name=value; name=value`, no attributes,
+// because a client never tells a server what it knows about a cookie.
+// Here rather than left to the caller because a client that built this
+// header with `str.join` would get the separator right and the byte
+// rules wrong.
+pub fn cookie_header(pairs: [(Str, Str)]) -> Result<Str, cookieattr.CookieError> []
+    todo("cookie-nv.cookiewrite.cookie_header")
+
+// A cookie value with the quoting RFC 6265 § 4.1.1 allows, if it needs
+// any.
+//
+// Quotes are added only when the value contains a byte the bare grammar
+// refuses AND that quoting makes legal — which is a small set, because
+// a control byte is illegal quoted too. A value that cannot be made
+// legal is refused rather than quoted into something a browser will cut
+// short at the first semicolon.
+pub fn quote_value(value: Str) -> Result<Str, cookieattr.CookieError> []
+    todo("cookie-nv.cookiewrite.quote_value")

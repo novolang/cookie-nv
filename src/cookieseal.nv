@@ -1,0 +1,214 @@
+// cookieseal.nv — private cookies: signed, and encrypted.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// TWO DIFFERENT PROMISES, AND A CALLER HAS TO PICK THE RIGHT ONE.
+//
+//   SIGNED    the client can READ the value and cannot CHANGE it.
+//             Right for a user id, a role, a flag — anything the client
+//             already knows about itself.
+//   ENCRYPTED the client can neither read nor change it.
+//             Right for anything the client should not know: an
+//             internal id, a feature the account has not been told
+//             about, a token for a third party.
+//
+// A library that offered one function called `secure` would be offering
+// the wrong one to half its callers.  The `cookie` crate's `signed()`
+// and `private()` jars are the shape this follows, and the two names
+// here say which promise is being made at the call site.
+//
+// **THE CIPHER IS AN ARGUMENT, NOT A DEPENDENCY.**  There is no AEAD on
+// the registry yet — `chacha20-nv` is a planned row — and a cookie
+// library that waited for one would be a cookie library nobody could
+// use to encrypt a cookie.  So `CookieCipher` is a pair of named
+// functions the caller supplies, and this package composes them with
+// the key derivation, the encoding and the name binding.  Three
+// consequences worth stating:
+//
+//   * the caller chooses the primitive, and can change it without this
+//     package publishing anything;
+//   * this package stays `[]` and free of a crypto implementation it
+//     would have to be trusted about;
+//   * and the functions are NAMED functions rather than lambdas, which
+//     is what the grid's rule about closures at a device tier asks for
+//     and what makes a call site say which cipher it chose.
+//
+// THE NAME IS AUTHENTICATED, AND THAT IS THE PART LIBRARIES MISS.  A
+// signed cookie whose MAC covers only the value lets a client move the
+// value from one cookie to another: a `role=user` signed for `role` is
+// a valid `admin` cookie if the server reads `admin` with the same key.
+// So the name goes into the MAC and into the AEAD's associated data,
+// every time, and `verify` takes the name it expects rather than
+// reading it out of the input.
+//
+// KEY ROTATION IS A LIST, NEWEST FIRST.  Signing uses the first key;
+// verification tries every key in order and answers which one matched.
+// That is what lets a key be rotated without logging everybody out: the
+// new key signs, the old key still verifies, and the old key comes off
+// the list a session lifetime later.  A single-key API cannot express
+// that at all, which is why rotation is in the type rather than in the
+// documentation.
+
+use cookieattr
+
+// A key set: the one that signs, and the ones that still verify.
+//
+// `keys[0]` signs. All of them verify, in order, and `verify` answers
+// the index that matched so a caller can count how many requests still
+// arrive under an old key — which is the number that says when the old
+// key can be dropped.
+pub struct CookieKeys
+    keys: [Bytes]
+
+// One key, as a key set.
+pub fn one_key(key: Bytes) -> CookieKeys []
+    todo("cookie-nv.cookieseal.one_key")
+
+// A key set from a list, newest first.
+pub fn keys_of(keys: [Bytes]) -> CookieKeys []
+    todo("cookie-nv.cookieseal.keys_of")
+
+// The key set with a new signing key in front, keeping the old ones.
+//
+// The rotation step, as one call. Written this way round because the
+// alternative — a caller assembling the list itself — is where the key
+// order gets reversed and every existing session is invalidated at
+// once.
+pub fn rotate(k: CookieKeys, newest: Bytes) -> CookieKeys []
+    todo("cookie-nv.cookieseal.rotate")
+
+// How many keys the set holds.
+pub fn key_count(k: CookieKeys) -> Int []
+    todo("cookie-nv.cookieseal.key_count")
+
+// How long a key must be, in bytes.
+//
+// 32, because the MAC is HMAC-SHA256 and a key shorter than the hash's
+// output is a key with less entropy than the tag it produces. Published
+// so a caller generating one asks rather than guesses.
+pub fn key_len() -> Int []
+    todo("cookie-nv.cookieseal.key_len")
+
+// ── Signed ───────────────────────────────────────────────────────────
+
+// Sign a value under a key set: the client reads it and cannot change
+// it.
+//
+// The output is the tag and the value together, base64url with no
+// padding, in that order — tag first so a truncated cookie fails at the
+// tag rather than at a value that decodes to something shorter.
+//
+// ```novo
+// use cookieseal
+//
+// fn main() [io]
+//     let k = cookieseal.one_key(bytes.zeros(32))
+//     println(cookieseal.sign("sid", "u=42", k))
+// ```
+pub fn sign(name: Str, value: Str, k: CookieKeys) -> Str []
+    todo("cookie-nv.cookieseal.sign")
+
+// Verify a signed value, answering it and the key index that matched.
+//
+// `name` is what the caller EXPECTS the cookie to be called, and it is
+// covered by the MAC — so a value signed for one cookie name does not
+// verify under another. A signed `role` cookie moved to an `admin`
+// cookie is the attack this closes.
+pub fn verify(name: Str, sealed: Str,
+              k: CookieKeys) -> Result<(Str, Int), cookieattr.CookieError> []
+    todo("cookie-nv.cookieseal.verify")
+
+// The value inside a signed cookie WITHOUT verifying it.
+//
+// A signed cookie is readable by the client by definition, so this
+// leaks nothing — and a caller logging what arrived, or migrating an
+// old format, needs to see it. The name says exactly what it skipped,
+// which is the whole reason it is spelled this way rather than as a
+// flag on `verify`.
+pub fn peek_signed(sealed: Str) -> ?Str []
+    todo("cookie-nv.cookieseal.peek_signed")
+
+// ── Encrypted ────────────────────────────────────────────────────────
+
+// A cipher the caller supplies.
+//
+// Two named functions and three numbers. An AEAD: `seal` takes a key, a
+// nonce, the associated data and the plaintext and answers the
+// ciphertext with its tag appended; `open` is the inverse and answers
+// `None` when the tag does not verify.
+//
+// NAMED FUNCTIONS rather than lambdas, deliberately. A lambda captures,
+// and a captured key is a key whose lifetime nobody can see at the call
+// site; a named function takes its key as an argument, so the key's
+// path through the program is visible.
+pub struct CookieCipher
+    // A name for the cipher, for a diagnostic and so that a caller can
+    // tell what sealed a cookie it is looking at.
+    name: Str
+    // How long a key is, how long a nonce is, and how many bytes the
+    // tag adds. The caller's cipher knows; this package needs all three
+    // to lay the cookie out.
+    key_bytes: Int
+    nonce_bytes: Int
+    tag_bytes: Int
+    seal: fn(Bytes, Bytes, Bytes, Bytes) -> Bytes
+    open_box: fn(Bytes, Bytes, Bytes, Bytes) -> ?Bytes
+
+// A cipher description.
+pub fn cipher(name: Str, key_bytes: Int, nonce_bytes: Int, tag_bytes: Int,
+              seal: fn(Bytes, Bytes, Bytes, Bytes) -> Bytes,
+              open_box: fn(Bytes, Bytes, Bytes, Bytes) -> ?Bytes) -> CookieCipher []
+    todo("cookie-nv.cookieseal.cipher")
+
+// Encrypt a value: the client can neither read it nor change it.
+//
+// The nonce is supplied by the caller and is NOT generated here,
+// because a `core` package has no randomness and a nonce it invented
+// would be a constant. A repeated nonce under one key breaks every AEAD
+// there is, so the caller's own source of randomness is the only honest
+// place for it — and `nonce_len` says how many bytes to bring.
+//
+// The cookie's NAME is the associated data, so an encrypted value moved
+// from one cookie to another fails to open.
+pub fn encrypt(name: Str, value: Str, k: CookieKeys, c: CookieCipher,
+               nonce: Bytes) -> Result<Str, cookieattr.CookieError> []
+    todo("cookie-nv.cookieseal.encrypt")
+
+// Decrypt a value, answering it and the key index that opened it.
+pub fn decrypt(name: Str, sealed: Str, k: CookieKeys,
+               c: CookieCipher) -> Result<(Str, Int), cookieattr.CookieError> []
+    todo("cookie-nv.cookieseal.decrypt")
+
+// How many random bytes `encrypt` needs for a nonce under this cipher.
+pub fn nonce_len(c: CookieCipher) -> Int []
+    todo("cookie-nv.cookieseal.nonce_len")
+
+// Whether a sealed value has the shape this package produces.
+//
+// A cheap check before a verify or a decrypt, so a caller can tell "not
+// one of ours" from "tampered with" — which are different events and
+// deserve different log lines.
+pub fn is_sealed(sealed: Str) -> Bool []
+    todo("cookie-nv.cookieseal.is_sealed")
+
+// ── Key derivation ───────────────────────────────────────────────────
+
+// Two keys derived from one master: one to sign with, one to encrypt
+// with.
+//
+// A caller holds ONE secret and needs two, and using the same bytes for
+// both is the mistake this exists to prevent — a MAC key and a cipher
+// key used interchangeably is a key reuse across primitives, which no
+// proof covers. Derived with HMAC-SHA256 over the master and a fixed
+// label per purpose, which is HKDF-Expand with one block.
+pub struct CookieDerived
+    signing: Bytes
+    encryption: Bytes
+
+// Derive the pair from a master secret.
+pub fn derive(master: Bytes) -> CookieDerived []
+    todo("cookie-nv.cookieseal.derive")
+
+// How long a master secret must be.
+pub fn master_len() -> Int []
+    todo("cookie-nv.cookieseal.master_len")

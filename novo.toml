@@ -1,0 +1,67 @@
+[package]
+name        = "cookie-nv"
+version     = "0.0.1"
+description = "RFC 6265bis in both directions: a `Cookie` header parsed into name and value spans over the caller's own string, a `Set-Cookie` written with every attribute and the `__Host-`/`__Secure-` prefix rules REFUSED rather than warned about, a cookie jar with the storage model's domain, path and expiry rules as arithmetic, and signed and encrypted cookies with the cipher supplied by the caller.  Interface only — every body is a todo()."
+license     = "Apache-2.0"
+
+# An INTERFACE release: every `pub fn` body is a `todo()`, so the
+# signatures and the effect rows are published and nothing is
+# implemented.  `novo pkg publish` recognises the shape and requires
+# both the draft stability and the 0.0.x version; the first
+# implementation is the 0.1.0 published over it.
+stability   = "draft"
+
+# `core`.  A cookie header is a string the caller already holds, an
+# attribute set is a value, and a jar is arithmetic over both.
+#
+# The two places a `core` cookie library would otherwise reach for a
+# host are the clock and the cipher, and neither is here: `Expires` is
+# calendar-nv's civil datetime, which the caller reads off its own
+# clock, and encryption is a function the caller supplies.  A jar
+# expires cookies against a time it is HANDED.
+#
+# No `@tier(embedded)` claim, and none is intended: a jar is a growable
+# list and a cookie header is a string.  A device that sets one cookie
+# formats one string, which is not what this package is for.
+layer       = "core"
+
+category    = "web"
+
+tags        = ["cookie", "set-cookie", "rfc6265", "http", "session", "samesite", "signed-cookies", "sans-io"]
+repository  = "https://github.com/novolang/cookie-nv"
+maintainers = ["novo-lang"]
+novo        = ">= 0.8.9"
+
+# A library: no `main`, so `novo pkg build` type-checks and
+# effect-checks every module under `src/` and writes no binary.
+
+[docs.pages]
+"README.md" = "The attributes a browser silently ignores, refused where they are written"
+
+[dependencies]
+# calendar-nv, FOR `Expires` AND FOR NOTHING ELSE.
+#
+# RFC 6265 § 5.1.1 defines its own date parser — five formats, a
+# two-digit year rule, and a deliberate tolerance for the spellings
+# Netscape shipped in 1994 — and the thing it produces is a civil
+# datetime.  `CivilDateTime` is that value, it is `core`, and it is what
+# a caller already has if it read a clock anywhere else in the program.
+#
+# What this does NOT take: an instant, a clock, or a timezone database.
+# A cookie's `Expires` is UTC by definition, and expiry is a comparison
+# against a time the CALLER passes in.  That is what keeps this package
+# `[]` — and it is also what makes a jar testable, because a test can
+# hand it a time rather than wait for one.
+calendar-nv = "^0.0.2"
+
+# crypto-nv, FOR THE HMAC UNDER A SIGNED COOKIE.
+#
+# `hashing.hmac_sha256` is the whole of it.  A signed cookie is a value
+# a client can read and cannot change, which is a MAC and nothing more;
+# building one out of a hash by hand is how a length-extension bug gets
+# shipped, and re-deriving HMAC here would be a second implementation of
+# a primitive that already has one on the registry.
+#
+# `core`, so `dep-layer` holds.  Encryption is NOT here: see
+# `cookieseal`'s header for why the cipher is an argument.
+crypto-nv = "^0.1.1"

@@ -1,0 +1,251 @@
+// cookiejar_tests.nv — parsing a header, and the storage model.
+//
+// RED ON PURPOSE: every body under `src/` is a `todo()`.
+//
+// THE MATCHING CASES ARE RFC 6265's OWN BOUNDARIES.  Domain-matching
+// and path-matching are about twenty lines of specification between
+// them, and each of the four cases below is one where the obvious
+// implementation — `ends_with` for domains, `starts_with` for paths —
+// gives the wrong answer and leaks a cookie to somebody.  A suite that
+// only checked the matching cases would pass on both implementations;
+// these are the non-matching ones.
+
+use std.test
+use std.list
+use civil
+use cookieparse
+use cookiejar
+
+fn at(y: Int, m: Int, d: Int) -> civil.CivilDateTime
+    match civil.date(y, m, d)
+        Ok(dd) => civil.datetime(dd, civil.midnight())
+        Err(_) => civil.datetime(civil.date_from_epoch_day(0), civil.midnight())
+
+@test
+fn test_a_cookie_header_is_spans_and_never_fails() [io]
+    let header = "sid=abc; theme=dark"
+
+    test.case("the pairs come back as ranges into the caller's own string")
+    let h = cookieparse.parse_header(header)
+    test.assert(list.len(h.pairs) == 2)
+    test.assert(h.skipped == 0)
+
+    test.case("and reading one of them copies one value")
+    match cookieparse.get(header, "theme")
+        Some(sp) =>
+            test.assert(sp.start == 15)
+            test.assert(cookieparse.span_str(header, sp) == "dark")
+        None     => test.assert(false)
+
+    test.case("a name the header does not carry is absent, not empty")
+    test.assert(cookieparse.get_str(header, "nosuch") == None)
+
+    test.case("and a cookie with an empty value is present, which is a different answer")
+    match cookieparse.get("sid=", "sid")
+        Some(sp) => test.assert(cookieparse.span_empty(sp))
+        None     => test.assert(false)
+
+    test.case("a malformed pair is skipped and counted rather than failing the header")
+    let messy = cookieparse.parse_header("sid=abc; garbage; theme=dark")
+    test.assert(list.len(messy.pairs) == 2)
+    test.assert(messy.skipped == 1)
+
+    test.case("counting does not build the list")
+    test.assert(cookieparse.count(header) == 2)
+
+    test.case("two cookies with one name answer the first, which is the more specific path")
+    test.assert(cookieparse.get_str("sid=inner; sid=outer", "sid") == Some("inner"))
+    test.assert(list.len(cookieparse.get_all("sid=inner; sid=outer", "sid")) == 2)
+
+    test.case("quotes are the client's, and stripping them is a separate call")
+    test.assert(cookieparse.unquote("\"abc\"") == "abc")
+    test.assert(cookieparse.unquote("abc") == "abc")
+
+@test
+fn test_set_cookie_is_strict_for_a_server_and_lenient_for_a_client() [io]
+    test.case("a server reading its own header hears about a malformed one")
+    match cookieparse.parse_set_cookie("no-equals-sign")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("a well-formed one parses into the pair and the attributes")
+    match cookieparse.parse_set_cookie("sid=abc; Path=/; Secure; HttpOnly; SameSite=Lax")
+        Ok(spec) =>
+            test.assert(spec.name == "sid")
+            test.assert(spec.value == "abc")
+            test.assert(spec.attrs.secure)
+            test.assert(spec.attrs.http_only)
+        Err(_)   => test.assert(false)
+
+    test.case("the lenient parser ignores what it cannot read, as a browser does")
+    let pair = cookieparse.parse_set_cookie_lenient("sid=abc; Max-Age=soon; Secure")
+    test.assert(pair.0.value == "abc")
+    test.assert(pair.0.attrs.secure)
+    test.assert(list.len(pair.1) == 1)
+
+@test
+fn test_the_expires_parser_accepts_what_browsers_accept() [io]
+    // RFC 6265 § 5.1.1's date parser is deliberately not a date parser:
+    // it finds a time, a day, a month name and a year in any order.
+    // calendar-nv's own parsers would refuse most of this.
+    test.case("the RFC 1123 spelling, which is what a server writes")
+    match cookieparse.parse_expires("Sun, 06 Nov 1994 08:49:37 GMT")
+        Ok(dt) => test.assert(dt.date.year == 1994)
+        Err(_) => test.assert(false)
+
+    test.case("the RFC 850 spelling, which Netscape shipped and browsers still take")
+    match cookieparse.parse_expires("Sunday, 06-Nov-94 08:49:37 GMT")
+        Ok(dt) => test.assert(dt.date.year == 1994)
+        Err(_) => test.assert(false)
+
+    test.case("the asctime spelling, with no comma and no zone")
+    match cookieparse.parse_expires("Sun Nov  6 08:49:37 1994")
+        Ok(dt) => test.assert(dt.date.year == 1994)
+        Err(_) => test.assert(false)
+
+    test.case("a two-digit year of 70 or more is the twentieth century")
+    match cookieparse.parse_expires("Sun, 06-Nov-70 08:49:37 GMT")
+        Ok(dt) => test.assert(dt.date.year == 1970)
+        Err(_) => test.assert(false)
+
+    test.case("and one below 70 is the twenty-first")
+    match cookieparse.parse_expires("Sun, 06-Nov-69 08:49:37 GMT")
+        Ok(dt) => test.assert(dt.date.year == 2069)
+        Err(_) => test.assert(false)
+
+    test.case("something that is no date at all is refused")
+    match cookieparse.parse_expires("whenever")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_domain_matching_is_a_boundary_and_not_a_suffix() [io]
+    test.case("a host matches itself")
+    test.assert(cookiejar.domain_matches("example.com", "example.com"))
+
+    test.case("and a subdomain matches its parent")
+    test.assert(cookiejar.domain_matches("a.example.com", "example.com"))
+
+    test.case("but `notexample.com` does NOT — the `ends_with` bug, and it leaks a cookie")
+    test.assert(cookiejar.domain_matches("notexample.com", "example.com") == false)
+
+    test.case("nor does a parent match its own subdomain")
+    test.assert(cookiejar.domain_matches("example.com", "a.example.com") == false)
+
+    test.case("an IP address matches only itself, because it has no subdomains")
+    test.assert(cookiejar.host_is_ip("192.0.2.1"))
+    test.assert(cookiejar.domain_matches("192.0.2.1", "192.0.2.1"))
+    test.assert(cookiejar.domain_matches("a.192.0.2.1", "192.0.2.1") == false)
+
+    test.case("hosts are compared lowercased, with a trailing dot removed")
+    test.assert(cookiejar.canonical_host("Example.COM.") == "example.com")
+
+@test
+fn test_path_matching_is_a_boundary_too() [io]
+    test.case("a path matches itself")
+    test.assert(cookiejar.path_matches("/foo", "/foo"))
+
+    test.case("and anything under it")
+    test.assert(cookiejar.path_matches("/foo/bar", "/foo"))
+    test.assert(cookiejar.path_matches("/foo/", "/foo"))
+
+    test.case("but `/foobar` does NOT — the `starts_with` bug")
+    test.assert(cookiejar.path_matches("/foobar", "/foo") == false)
+
+    test.case("a cookie path ending in a slash needs no boundary byte")
+    test.assert(cookiejar.path_matches("/foo/bar", "/foo/"))
+
+    test.case("the default-path scopes a cookie to a directory, which is why defaults() sets `/`")
+    test.assert(cookiejar.default_path("/a/b/c") == "/a/b")
+    test.assert(cookiejar.default_path("/a") == "/")
+    test.assert(cookiejar.default_path("/") == "/")
+
+@test
+fn test_the_public_suffix_question_is_the_callers_and_the_jar_says_so() [io]
+    // The Public Suffix List is 220 KB of facts about the world with its
+    // own update cadence.  Compiling it in would make this package stale
+    // the day it published.
+    test.case("the default rules answer `false` for every domain")
+    let r = cookiejar.no_public_suffixes()
+    test.assert(r.is_public_suffix("co.uk") == false)
+
+    test.case("and say so, so a caller can assert on it at start-up")
+    test.assert(cookiejar.jar_rules_are_unsafe(r))
+
+    test.case("the bounds are the ones every browser uses")
+    test.assert(r.max_cookies == 3000)
+    test.assert(r.max_per_domain == 50)
+    test.assert(r.max_cookie_bytes == 4096)
+
+@test
+fn test_a_jar_expires_against_a_time_it_is_handed() [io]
+    // What keeps the package `core`: expiry is a comparison, and the
+    // thing compared against arrives from a caller who read a clock.
+    let r = cookiejar.no_public_suffixes()
+    var j = cookiejar.jar(r)
+    let now = at(2026, 1, 1)
+    let later = at(2027, 1, 1)
+
+    test.case("a cookie stored is a cookie sent back to the host that set it")
+    match cookieparse.parse_set_cookie("sid=abc; Path=/; Secure")
+        Ok(spec) =>
+            match cookiejar.store(j, spec, "example.com", "/", now)
+                Ok(next) =>
+                    j = next
+                    test.assert(cookiejar.jar_len(j) == 1)
+                    test.assert(list.len(cookiejar.cookies_for(j, "example.com", "/",
+                                                               true, now)) == 1)
+                Err(_)   => test.assert(false)
+        Err(_)   => test.assert(false)
+
+    test.case("a Secure cookie is not sent over a connection that is not")
+    test.assert(list.len(cookiejar.cookies_for(j, "example.com", "/", false, now)) == 0)
+
+    test.case("a host-only cookie is not sent to a subdomain")
+    test.assert(list.len(cookiejar.cookies_for(j, "a.example.com", "/", true, now)) == 0)
+
+    test.case("an expired cookie is not returned, and is not removed by the read")
+    var k = cookiejar.jar(r)
+    match cookieparse.parse_set_cookie("old=x; Path=/; Expires=Sun, 06 Nov 1994 08:49:37 GMT")
+        Ok(spec) =>
+            match cookiejar.store(k, spec, "example.com", "/", now)
+                Ok(next) =>
+                    k = next
+                Err(_)   => test.assert(false)
+        Err(_)   => test.assert(false)
+    test.assert(list.len(cookiejar.cookies_for(k, "example.com", "/", false, now)) == 0)
+
+    test.case("pruning is what removes it, so a read never depends on who read before")
+    test.assert(cookiejar.jar_len(cookiejar.prune(k, later)) == 0)
+
+    test.case("session cookies go when the caller says the session did")
+    test.assert(cookiejar.jar_len(cookiejar.clear_session(j)) == 0)
+
+    test.case("and one cookie is removable by the triple that identifies it")
+    test.assert(cookiejar.jar_len(cookiejar.remove(j, "sid", "example.com", "/")) == 0)
+
+@test
+fn test_a_jar_can_be_taken_apart_and_put_back_together() [io]
+    // A `core` package has nothing to write to, so persistence is the
+    // caller's — and every field an entry needs to be rebuilt is public
+    // for exactly that reason.
+    let r = cookiejar.no_public_suffixes()
+    let j = cookiejar.jar(r)
+
+    test.case("the entries come out")
+    test.assert(list.len(cookiejar.entries(j)) == 0)
+
+    test.case("and go back in")
+    test.assert(cookiejar.jar_len(cookiejar.jar_from(r, cookiejar.entries(j))) == 0)
+
+    test.case("the rules can carry a caller's own suffix list")
+    let strict = cookiejar.rules_with_suffixes(cookiejar.host_is_ip)
+    test.assert(cookiejar.jar_rules_are_unsafe(strict) == false)
+
+    test.case("a jar answers the request header for what it would send")
+    test.assert(cookiejar.header_for(j, "example.com", "/", true, at(2026, 1, 1)) == "")
+
+    test.case("and an entry's expiry is askable on its own")
+    match list.first(cookiejar.entries(j))
+        Some(e) => test.assert(cookiejar.is_expired(e, at(2026, 1, 1)) == false)
+        None    => test.assert(true)

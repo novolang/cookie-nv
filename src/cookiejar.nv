@@ -1,0 +1,263 @@
+// cookiejar.nv — the storage model, as arithmetic over a value.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// A JAR IS A VALUE AND HAS NO CLOCK.  `store` and `cookies_for` take
+// the time as an argument, and that is what keeps the package `core`:
+// expiry is a comparison, and the thing being compared against arrives
+// from a caller who read a clock.  It is also what makes a jar
+// testable — a test that wants to see a cookie expire hands the jar a
+// later time rather than sleeping.
+//
+// THE MATCHING RULES ARE SMALL, EXACT AND EASY TO GET WRONG.  RFC 6265
+// § 5.1.3 and § 5.1.4 define domain-matching and path-matching in about
+// twenty lines between them, and every clause exists because something
+// broke without it:
+//
+//   * `example.com` domain-matches `example.com` and
+//     `a.example.com`, but NOT `notexample.com` — the check is a suffix
+//     comparison with a `.` boundary, and a plain `ends_with` is the
+//     bug;
+//   * a host-only cookie matches its host and nothing else, which is
+//     what "no `Domain` attribute" means and why absent is not the same
+//     as present-with-the-host;
+//   * `/foo` path-matches `/foo`, `/foo/` and `/foo/bar`, but not
+//     `/foobar` — again a boundary, again the bug is `starts_with`;
+//   * an IP address never domain-matches anything but itself, because
+//     `1.2.3.4` has no subdomains and treating it as a name is how a
+//     cookie leaks to a neighbour on a shared host.
+//
+// **THE PUBLIC SUFFIX LIST IS NOT HERE, AND THAT IS A DECISION RATHER
+// THAN AN OMISSION.**  RFC 6265 § 5.3 step 5 says a browser must reject
+// a `Domain` that is a public suffix — `Domain=com`, `Domain=co.uk`,
+// `Domain=github.io` — because accepting one would let any site set a
+// cookie for every site under it.  Answering that needs the Public
+// Suffix List: about 220 KB of data with its own update cadence, whose
+// correctness is a moving fact about the world rather than about HTTP.
+// Compiling it into this package would make the package stale the day
+// it published, and would make a jar's behaviour depend on when its
+// dependency was last released.
+//
+// So the jar takes the question as a function: `CookieJarRules.is_public_suffix`
+// is a `fn(Str) -> Bool` the caller supplies.  `no_public_suffixes()`
+// is the honest default — it answers `false` for everything, which
+// means the jar accepts `Domain=co.uk`, and `jar_rules_are_unsafe`
+// answers `true` so a caller can see that it did.  A caller that
+// matters supplies a real list; a test does not need one; and neither
+// case is served by a package that pretended to know.
+
+use civil
+use cookieattr
+use cookieparse
+
+// A cookie as a jar holds it.
+//
+// The triple that identifies it is `(name, domain, path_value)`, which
+// is the browser's own key — and the reason deleting a cookie needs the
+// attributes it was set with.
+pub struct CookieEntry
+    name: Str
+    value: Str
+    // The domain the cookie is scoped to, always without a leading dot.
+    // The RFC's grammar allows `.example.com` and its algorithm strips
+    // the dot immediately, so storing it would mean comparing two
+    // spellings of one value forever.
+    domain: Str
+    path_value: Str
+    // Whether the cookie was set WITHOUT a `Domain` attribute.
+    //
+    // Not derivable from `domain`, which holds the origin host in that
+    // case — and the difference decides whether a subdomain gets the
+    // cookie. The most common jar bug there is.
+    host_only: Bool
+    secure: Bool
+    http_only: Bool
+    same_site: cookieattr.CookieSameSite
+    // When the cookie expires. `CookieLifeSession` is held until the
+    // caller drops the jar, which is what a session cookie means.
+    life: cookieattr.CookieLife
+    // When the cookie was created, and when it was last sent.
+    //
+    // Both are RFC 6265 § 5.4 step 2's sort key: cookies go out
+    // longest-path-first, and creation time breaks the tie. A jar that
+    // sorted differently would send a server its cookies in an order
+    // the server's own parser reads differently, which is how a
+    // path-scoped override stops overriding.
+    created: civil.CivilDateTime
+    last_accessed: civil.CivilDateTime
+
+// The questions a jar cannot answer for itself.
+pub struct CookieJarRules
+    // Whether a domain is a public suffix — `com`, `co.uk`,
+    // `github.io`. The Public Suffix List, as a function, because the
+    // list is 220 KB of facts about the world with its own update
+    // cadence and compiling it in would make this package stale on the
+    // day it published.
+    is_public_suffix: fn(Str) -> Bool
+    // How many cookies the jar will hold in total, and how many per
+    // domain. RFC 6265bis § 5.6 suggests 3000 and 50; a jar with no
+    // bound is a memory leak a server can be talked into.
+    max_cookies: Int
+    max_per_domain: Int
+    // The largest `name=value` the jar will store, in bytes. 4096 is
+    // the number every browser uses.
+    max_cookie_bytes: Int
+
+// The rules with no public-suffix list behind them.
+//
+// `is_public_suffix` answers `false` for everything, so the jar will
+// accept `Domain=co.uk`. Honest and unsafe, and `jar_rules_are_unsafe`
+// says so — a default that pretended otherwise would be worse, because
+// a caller would believe it.
+pub fn no_public_suffixes() -> CookieJarRules []
+    todo("cookie-nv.cookiejar.no_public_suffixes")
+
+// The rules with a caller's public-suffix test.
+pub fn rules_with_suffixes(is_public_suffix: fn(Str) -> Bool) -> CookieJarRules []
+    todo("cookie-nv.cookiejar.rules_with_suffixes")
+
+// Whether these rules accept a `Domain` no browser would.
+//
+// True for `no_public_suffixes()`. Published so a caller can assert on
+// it at start-up rather than discover it in an incident.
+pub fn jar_rules_are_unsafe(r: CookieJarRules) -> Bool []
+    todo("cookie-nv.cookiejar.jar_rules_are_unsafe")
+
+// A jar: a value, with no clock and no storage behind it.
+pub struct CookieJar
+    entries: [CookieEntry]
+    rules: CookieJarRules
+
+// An empty jar.
+pub fn jar(r: CookieJarRules) -> CookieJar []
+    todo("cookie-nv.cookiejar.jar")
+
+// Store a `Set-Cookie` that arrived from a request to `host` and
+// `path_value`, at `now`.
+//
+// RFC 6265 § 5.3's whole algorithm: the `Domain` is checked against the
+// request host and against the public-suffix rule, a missing `Domain`
+// makes the cookie host-only, a missing `Path` takes the default-path
+// of the request, an already-expired cookie REMOVES any cookie it
+// matches rather than being stored, and a cookie replacing an existing
+// one keeps the original's creation time.
+//
+// The last clause is the one everybody misses, and it is observable: a
+// refreshed session cookie that took a new creation time would sort
+// differently and could start arriving after a path-scoped cookie it
+// used to precede.
+pub fn store(j: CookieJar, spec: cookieparse.CookieSpec, host: Str, path_value: Str,
+             now: civil.CivilDateTime) -> Result<CookieJar, cookieattr.CookieError> []
+    todo("cookie-nv.cookiejar.store")
+
+// Every cookie the jar would send to `host` and `path_value` over a
+// connection whose security is `is_secure`, at `now`.
+//
+// In RFC 6265 § 5.4's order: longest path first, creation time breaking
+// the tie. Expired cookies are not returned and are not removed —
+// removal is `prune`, because a read that mutated would make this
+// function's answer depend on whether anybody had called it before.
+pub fn cookies_for(j: CookieJar, host: Str, path_value: Str, is_secure: Bool,
+                   now: civil.CivilDateTime) -> [CookieEntry] []
+    todo("cookie-nv.cookiejar.cookies_for")
+
+// The `Cookie` request header for what `cookies_for` answers.
+pub fn header_for(j: CookieJar, host: Str, path_value: Str, is_secure: Bool,
+                  now: civil.CivilDateTime) -> Str []
+    todo("cookie-nv.cookiejar.header_for")
+
+// The jar with every cookie expired at `now` removed.
+pub fn prune(j: CookieJar, now: civil.CivilDateTime) -> CookieJar []
+    todo("cookie-nv.cookiejar.prune")
+
+// The jar with every session cookie removed.
+//
+// What a browser does when it closes, and what a client library does
+// when a caller asks for a fresh session without dropping its
+// persistent cookies.
+pub fn clear_session(j: CookieJar) -> CookieJar []
+    todo("cookie-nv.cookiejar.clear_session")
+
+// The jar with one cookie removed, by the triple that identifies it.
+pub fn remove(j: CookieJar, name: Str, domain: Str, path_value: Str) -> CookieJar []
+    todo("cookie-nv.cookiejar.remove")
+
+// How many cookies the jar holds, expired ones included.
+pub fn jar_len(j: CookieJar) -> Int []
+    todo("cookie-nv.cookiejar.jar_len")
+
+// Every cookie in the jar, in no particular order.
+//
+// For a caller persisting a jar. Serialising it is the caller's — a
+// `core` package has nothing to write to — and every field an entry
+// needs to be rebuilt is public for exactly that reason.
+pub fn entries(j: CookieJar) -> [CookieEntry] []
+    todo("cookie-nv.cookiejar.entries")
+
+// The jar rebuilt from entries a caller had stored.
+pub fn jar_from(r: CookieJarRules, es: [CookieEntry]) -> CookieJar []
+    todo("cookie-nv.cookiejar.jar_from")
+
+// ── The matching rules, published ────────────────────────────────────
+//
+// Public because a server has the same questions a jar does — "is this
+// request in the scope of the cookie I set?" — and because two copies
+// of a boundary rule is two places for the boundary to be wrong.
+
+// Whether `host` domain-matches `domain`, per RFC 6265 § 5.1.3.
+//
+// True when they are equal, or when `host` ends with `"." + domain` and
+// `domain` is not an IP address. A plain suffix test makes
+// `notexample.com` match `example.com`, which is the bug this function
+// exists to not have.
+//
+// ```novo
+// use cookiejar
+//
+// fn main() [io]
+//     println(string_of_bool(cookiejar.domain_matches("a.example.com", "example.com")))
+//     println(string_of_bool(cookiejar.domain_matches("notexample.com", "example.com")))
+// ```
+pub fn domain_matches(host: Str, domain: Str) -> Bool []
+    todo("cookie-nv.cookiejar.domain_matches")
+
+// Whether `request_path` path-matches `cookie_path`, per RFC 6265
+// § 5.1.4.
+//
+// True when they are equal, or when `cookie_path` is a prefix of
+// `request_path` AND either `cookie_path` ends in `/` or the next byte
+// of `request_path` is `/`. The second clause is what keeps `/foo` from
+// matching `/foobar`.
+pub fn path_matches(request_path: Str, cookie_path: Str) -> Bool []
+    todo("cookie-nv.cookiejar.path_matches")
+
+// The default-path of a request path, per RFC 6265 § 5.1.4.
+//
+// Everything up to the last `/`, or `/` when there is nothing before
+// it. What a `Set-Cookie` with no `Path` gets — and the reason
+// `cookieattr.defaults()` sets `Path=/` explicitly, because the default
+// scopes a cookie to a directory almost no caller meant.
+pub fn default_path(request_path: Str) -> Str []
+    todo("cookie-nv.cookiejar.default_path")
+
+// Whether a host is an IP address rather than a name.
+//
+// An IP never domain-matches anything but itself: `1.2.3.4` has no
+// subdomains, and treating it as a name is how a cookie leaks to a
+// neighbour on a shared host.
+pub fn host_is_ip(host: Str) -> Bool []
+    todo("cookie-nv.cookiejar.host_is_ip")
+
+// A host normalised the way the storage model compares them: lowercased
+// ASCII, with a trailing dot removed.
+//
+// ASCII only. An internationalised host arrives already in its
+// punycode form, because that is what a URL parser produces and what a
+// TLS certificate carries; folding Unicode here would make the
+// comparison depend on a table the browser does not use at this step.
+pub fn canonical_host(host: Str) -> Str []
+    todo("cookie-nv.cookiejar.canonical_host")
+
+// Whether a cookie has expired at `now`.
+pub fn is_expired(e: CookieEntry, now: civil.CivilDateTime) -> Bool []
+    todo("cookie-nv.cookiejar.is_expired")

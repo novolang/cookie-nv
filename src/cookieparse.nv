@@ -1,0 +1,162 @@
+// cookieparse.nv — a `Cookie` header, and a `Set-Cookie` header, read.
+//
+// Every body here is a `todo()`; the signatures are the design.
+//
+// THE TWO HEADERS ARE NOT THE SAME GRAMMAR, and conflating them is the
+// first mistake a cookie library makes.  `Cookie:` is what a CLIENT
+// sends: a list of `name=value` pairs separated by `; `, with no
+// attributes at all, because a browser never tells a server what it
+// knows about a cookie — not its domain, not its path, not its expiry.
+// `Set-Cookie:` is what a SERVER sends: exactly one pair, followed by
+// the attributes.  A server parses the first and writes the second; a
+// client does the reverse.  So there are two parsers here and they
+// share nothing but the byte rules.
+//
+// EVERYTHING IS A SPAN.  `parse_header` answers ranges into the header
+// string the caller already holds, so reading one cookie out of a
+// request with eight of them copies one value.  The alternative — a
+// list of `(Str, Str)` — allocates sixteen strings on every request to
+// answer a question about one.
+//
+// PARSING IS TOLERANT, AND WHERE IT IS THE SPEC SAYS SO.  RFC 6265bis
+// § 5.5 tells a browser to ignore a malformed pair and keep going, and
+// a server that refused a whole header because one pair was odd would
+// log out every user whose browser had a stale cookie from another
+// application on the same domain.  So `parse_header` never fails: a
+// pair it cannot read is skipped and counted.  `parse_set_cookie` DOES
+// answer a `Result`, because a server writing its own header and
+// getting it wrong is a bug the server should hear about.
+
+use civil
+use cookieattr
+
+// One `name=value` pair from a `Cookie` header, as spans.
+pub struct CookiePair
+    name: cookieattr.CookieSpan
+    value: cookieattr.CookieSpan
+
+// What a `Cookie` header held.
+pub struct CookieHeader
+    pairs: [CookiePair]
+    // How many pairs were skipped as unreadable.
+    //
+    // A count rather than a list of errors, because the caller's only
+    // sensible response is a metric: a request whose cookie header has
+    // a bad pair is a browser with a stale cookie, not an attack, and
+    // there is nothing to do about it per-pair.  A count that climbs is
+    // a different matter, and that is what this field is for.
+    skipped: Int
+
+// Parse a `Cookie` request header.
+//
+// Never fails: a malformed pair is skipped and counted, which is what
+// RFC 6265bis § 5.5 has a browser do and what keeps one stale cookie
+// from logging a user out.
+//
+// ```novo
+// use cookieparse
+// use std.list
+//
+// fn main() [io]
+//     let h = cookieparse.parse_header("sid=abc; theme=dark")
+//     println(string_of_int(list.len(h.pairs)))
+// ```
+pub fn parse_header(header: Str) -> CookieHeader []
+    todo("cookie-nv.cookieparse.parse_header")
+
+// One cookie's value from a `Cookie` header, by name.
+//
+// The question almost every caller actually has.  Answers the FIRST
+// match, which is what RFC 6265bis § 5.5 requires: a header may carry
+// two cookies with one name — one from `/` and one from `/admin` — and
+// the browser sends the more specific path first.  A parser that
+// answered the last would hand a caller the wrong session.
+pub fn get(header: Str, name: Str) -> ?cookieattr.CookieSpan []
+    todo("cookie-nv.cookieparse.get")
+
+// One cookie's value, copied out.
+pub fn get_str(header: Str, name: Str) -> ?Str []
+    todo("cookie-nv.cookieparse.get_str")
+
+// Every value in the header under one name, in the order they appeared.
+//
+// The case `get` decides for the caller, exposed for the caller that
+// needs to decide for itself — a path-scoped cookie shadowing a
+// site-wide one is a real configuration and a caller may want both.
+pub fn get_all(header: Str, name: Str) -> [cookieattr.CookieSpan] []
+    todo("cookie-nv.cookieparse.get_all")
+
+// The text a span covers.
+pub fn span_str(header: Str, sp: cookieattr.CookieSpan) -> Str []
+    todo("cookie-nv.cookieparse.span_str")
+
+// Whether a span covers nothing.
+//
+// A cookie with an empty value is legal and is different from an absent
+// one, which is why this is a separate question from `get` answering
+// `None`.
+pub fn span_empty(sp: cookieattr.CookieSpan) -> Bool []
+    todo("cookie-nv.cookieparse.span_empty")
+
+// A cookie value with its surrounding double quotes removed.
+//
+// RFC 6265 § 4.1.1 allows a quoted value, browsers send the quotes back
+// verbatim, and a caller comparing a value against what it wrote will
+// not see them unless something removes them.  Separate from `get`
+// because the quotes are part of the value to a client that stored
+// them, and a server that strips them in the parser cannot round-trip.
+pub fn unquote(value: Str) -> Str []
+    todo("cookie-nv.cookieparse.unquote")
+
+// ── Set-Cookie ───────────────────────────────────────────────────────
+
+// A parsed `Set-Cookie`: the pair, and everything after it.
+//
+// The name and value are copied here rather than left as spans, because
+// a client parsing a `Set-Cookie` is about to put the cookie in a jar
+// and outlive the header it came in.  That is the opposite of the
+// request side, and the asymmetry is deliberate: a server reads many
+// cookies and keeps none, a client reads one and keeps it.
+pub struct CookieSpec
+    name: Str
+    value: Str
+    attrs: cookieattr.CookieAttrs
+
+// Parse a `Set-Cookie` response header.
+//
+// Answers a `Result`, unlike `parse_header`: this is the header a
+// server WRITES, so a program reading its own output and finding it
+// malformed has a bug worth hearing about.  A client parsing a header
+// from elsewhere that wants browser behaviour uses
+// `parse_set_cookie_lenient`.
+pub fn parse_set_cookie(header: Str) -> Result<CookieSpec, cookieattr.CookieError> []
+    todo("cookie-nv.cookieparse.parse_set_cookie")
+
+// Parse a `Set-Cookie` the way a browser does: never fail, ignore what
+// cannot be read, and record what was ignored.
+//
+// RFC 6265bis § 5.4 is a list of "if the value is not X, ignore this
+// attribute and continue" clauses, and a client that refused instead
+// would reject cookies every browser accepts.  The ignored attributes
+// come back so a caller can see what a server got wrong.
+pub fn parse_set_cookie_lenient(header: Str) -> (CookieSpec, [cookieattr.CookieError]) []
+    todo("cookie-nv.cookieparse.parse_set_cookie_lenient")
+
+// Parse an `Expires` value in any of the spellings RFC 6265 § 5.1.1
+// accepts.
+//
+// Its date parser is deliberately not a date parser: it splits on
+// delimiters, finds a time, a day, a month name and a year in any
+// order, and applies a two-digit-year rule where 69 is 2069 and 70 is
+// 1970.  That is not RFC 1123 and not ISO 8601, and calendar-nv's own
+// parsers would refuse most of what browsers accept — which is why this
+// one is here rather than delegated.
+pub fn parse_expires(text: Str) -> Result<civil.CivilDateTime, cookieattr.CookieError> []
+    todo("cookie-nv.cookieparse.parse_expires")
+
+// How many cookies a `Cookie` header holds, without building the list.
+//
+// For a caller bounding what it will accept: RFC 6265bis § 5.6 suggests
+// a limit and a request with four hundred cookies is not a browser.
+pub fn count(header: Str) -> Int []
+    todo("cookie-nv.cookieparse.count")
