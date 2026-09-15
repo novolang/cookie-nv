@@ -1,6 +1,6 @@
 [package]
 name        = "cookie-nv"
-version     = "0.0.1"
+version     = "0.0.2"
 description = "RFC 6265bis in both directions: a `Cookie` header parsed into name and value spans over the caller's own string, a `Set-Cookie` written with every attribute and the `__Host-`/`__Secure-` prefix rules REFUSED rather than warned about, a cookie jar with the storage model's domain, path and expiry rules as arithmetic, and signed and encrypted cookies with the cipher supplied by the caller.  Interface only — every body is a todo()."
 license     = "Apache-2.0"
 

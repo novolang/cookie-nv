@@ -5,6 +5,10 @@ All notable changes to cookie-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.0.2 — 2026-09-15
+
+README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
+
 ## 0.0.1 — 2026-09-11
 
 The **interface**: every signature and every effect row, and no bodies.
@@ -45,3 +49,21 @@ The **interface**: every signature and every effect row, and no bodies.
 - **The jar has no clock.** Expiry compares against a time the caller
   passes in, which is what keeps the package `[]`.
 - **No `@tier(embedded)` claim.** A jar is a growable list.
+
+### Design notes
+
+Public type names are unique across a whole assembly, dependencies
+included, so the names here are prefixed where the obvious name would
+collide. `CookieAttrs` rather than `Options`, `CookiePair` and
+`CookieSpec` rather than one `Cookie`, `CookieJar` rather than `Jar`,
+`CookieSpan` because url-nv publishes `Span`, `CookieKeys` and
+`CookieCipher` because `Key` and `Cipher` belong to every cryptography
+package, and `CookieLife` because `Duration` is a standard library
+type. The modules are `cookieattr`, `cookieparse`, `cookiewrite`,
+`cookiejar` and `cookieseal` for the same reason: `parse`, `write` and
+a bare `cookie` are names other packages will want.
+
+Parsing is asymmetric on purpose. `cookieparse.parse_header` answers
+spans into the caller's string and `parse_set_cookie` copies, because a
+server reads many cookies and keeps none while a client reads one and
+keeps it.
