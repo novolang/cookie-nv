@@ -254,7 +254,8 @@ needs `cookieparse` and `cookiewrite` and nothing else.
 - **Sessions.** A session is a cookie and a store.
   [session-nv](https://novo-lang.org/packages/session-nv) has both.
 - **A build for a microcontroller.** A jar is a growable list and a
-  header is a string, so this package makes no device claim.
+  header is a string, so this package does not build for a
+  microcontroller with no heap allocator.
 
 ## Related packages
 
