@@ -1,32 +1,26 @@
 // cookieparse.nv — a `Cookie` header, and a `Set-Cookie` header, read.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// The two headers have two grammars.  `Cookie` is what a client sends:
+// a list of `name=value` pairs separated by `; `, with no attributes
+// (RFC 6265bis section 4.2.1).  `Set-Cookie` is what a server sends:
+// one pair followed by its attributes (section 4.1.1).  A server
+// parses the first and writes the second, and a client does the
+// reverse.  The two parsers here share only the byte rules.
 //
-// THE TWO HEADERS ARE NOT THE SAME GRAMMAR, and conflating them is the
-// first mistake a cookie library makes.  `Cookie:` is what a CLIENT
-// sends: a list of `name=value` pairs separated by `; `, with no
-// attributes at all, because a browser never tells a server what it
-// knows about a cookie — not its domain, not its path, not its expiry.
-// `Set-Cookie:` is what a SERVER sends: exactly one pair, followed by
-// the attributes.  A server parses the first and writes the second; a
-// client does the reverse.  So there are two parsers here and they
-// share nothing but the byte rules.
+// A `Cookie` header is read into spans, byte ranges into the string
+// the caller holds, so reading one cookie out of a request copies one
+// value.  The parser never fails: a pair it cannot read is skipped and
+// counted.
 //
-// EVERYTHING IS A SPAN.  `parse_header` answers ranges into the header
-// string the caller already holds, so reading one cookie out of a
-// request with eight of them copies one value.  The alternative — a
-// list of `(Str, Str)` — allocates sixteen strings on every request to
-// answer a question about one.
-//
-// PARSING IS TOLERANT, AND WHERE IT IS THE SPEC SAYS SO.  RFC 6265bis
-// § 5.5 tells a browser to ignore a malformed pair and keep going, and
-// a server that refused a whole header because one pair was odd would
-// log out every user whose browser had a stale cookie from another
-// application on the same domain.  So `parse_header` never fails: a
-// pair it cannot read is skipped and counted.  `parse_set_cookie` DOES
-// answer a `Result`, because a server writing its own header and
-// getting it wrong is a bug the server should hear about.
+// A `Set-Cookie` is read into a `CookieSpec`, which holds copies,
+// because a client stores the cookie beyond the life of the header.
+// `parse_set_cookie` answers a `Result` and refuses what the server
+// grammar refuses.  `parse_set_cookie_lenient` follows the algorithm a
+// browser runs (section 5.6), which ignores an attribute it cannot read
+// and keeps going.
 
+use std.list
+use std.str
 use civil
 use cookieattr
 
@@ -38,20 +32,18 @@ pub struct CookiePair
 // What a `Cookie` header held.
 pub struct CookieHeader
     pairs: [CookiePair]
-    // How many pairs were skipped as unreadable.
-    //
-    // A count rather than a list of errors, because the caller's only
-    // sensible response is a metric: a request whose cookie header has
-    // a bad pair is a browser with a stale cookie, not an attack, and
-    // there is nothing to do about it per-pair.  A count that climbs is
-    // a different matter, and that is what this field is for.
+    // How many pairs were skipped as unreadable: a piece with no `=`,
+    // or one whose name is empty.
     skipped: Int
 
 // Parse a `Cookie` request header.
 //
-// Never fails: a malformed pair is skipped and counted, which is what
-// RFC 6265bis § 5.5 has a browser do and what keeps one stale cookie
-// from logging a user out.
+// The header is split at every `;`.  Each piece has its surrounding
+// spaces and tabs removed and is split at its first `=`.  A piece with
+// no `=`, or with an empty name, is skipped and counted, and an empty
+// piece is skipped without being counted.  Names and values are not
+// checked against the grammar, since a server reads what the client
+// sent.
 //
 // ```novo
 // use cookieparse
@@ -62,101 +54,418 @@ pub struct CookieHeader
 //     println(string_of_int(list.len(h.pairs)))
 // ```
 pub fn parse_header(header: Str) -> CookieHeader []
-    todo("cookie-nv.cookieparse.parse_header")
+    var pairs: [CookiePair] = []
+    var skipped = 0
+    let n = str.len(header)
+    var i = 0
+    for _ in 0..n + 1
+        if i > n
+            break
+        let end = piece_end(header, i)
+        match pair_in(header, i, end)
+            Some(p) => list.push(pairs, p)
+            None    =>
+                if not blank(header, i, end)
+                    skipped = skipped + 1
+        i = end + 1
+    CookieHeader { pairs: pairs, skipped: skipped }
 
 // One cookie's value from a `Cookie` header, by name.
 //
-// The question almost every caller actually has.  Answers the FIRST
-// match, which is what RFC 6265bis § 5.5 requires: a header may carry
-// two cookies with one name — one from `/` and one from `/admin` — and
-// the browser sends the more specific path first.  A parser that
-// answered the last would hand a caller the wrong session.
+// Answers the first pair with that name.  A browser sends a cookie with
+// a longer path before one with a shorter path (RFC 6265bis section
+// 5.8.3 step 2), so the first is the more specific one.
 pub fn get(header: Str, name: Str) -> ?cookieattr.CookieSpan []
-    todo("cookie-nv.cookieparse.get")
+    list.first(get_all(header, name))
 
 // One cookie's value, copied out.
 pub fn get_str(header: Str, name: Str) -> ?Str []
-    todo("cookie-nv.cookieparse.get_str")
+    match get(header, name)
+        Some(sp) => Some(span_str(header, sp))
+        None     => None
 
 // Every value in the header under one name, in the order they appeared.
-//
-// The case `get` decides for the caller, exposed for the caller that
-// needs to decide for itself — a path-scoped cookie shadowing a
-// site-wide one is a real configuration and a caller may want both.
 pub fn get_all(header: Str, name: Str) -> [cookieattr.CookieSpan] []
-    todo("cookie-nv.cookieparse.get_all")
+    var out: [cookieattr.CookieSpan] = []
+    for p in parse_header(header).pairs
+        if span_str(header, p.name) == name
+            list.push(out, p.value)
+    out
 
 // The text a span covers.
 pub fn span_str(header: Str, sp: cookieattr.CookieSpan) -> Str []
-    todo("cookie-nv.cookieparse.span_str")
+    str.slice(header, sp.start, sp.start + sp.len)
 
 // Whether a span covers nothing.
 //
-// A cookie with an empty value is legal and is different from an absent
-// one, which is why this is a separate question from `get` answering
-// `None`.
+// A cookie with an empty value is present, which `get` answers as
+// `Some` of an empty span, and an absent one is `None`.
 pub fn span_empty(sp: cookieattr.CookieSpan) -> Bool []
-    todo("cookie-nv.cookieparse.span_empty")
+    sp.len == 0
 
 // A cookie value with its surrounding double quotes removed.
 //
-// RFC 6265 § 4.1.1 allows a quoted value, browsers send the quotes back
-// verbatim, and a caller comparing a value against what it wrote will
-// not see them unless something removes them.  Separate from `get`
-// because the quotes are part of the value to a client that stored
-// them, and a server that strips them in the parser cannot round-trip.
+// RFC 6265bis section 4.1.1 allows a value in double quotes, and a
+// browser sends the quotes back as they were stored.  A value that does
+// not both begin and end with a quote is answered unchanged.
 pub fn unquote(value: Str) -> Str []
-    todo("cookie-nv.cookieparse.unquote")
+    let n = str.len(value)
+    if n >= 2 and str.byte_at_or(value, 0, 0) == '"' and str.byte_at_or(value, n - 1, 0) == '"'
+        return str.slice(value, 1, n - 1)
+    value
 
 // ── Set-Cookie ───────────────────────────────────────────────────────
 
 // A parsed `Set-Cookie`: the pair, and everything after it.
-//
-// The name and value are copied here rather than left as spans, because
-// a client parsing a `Set-Cookie` is about to put the cookie in a jar
-// and outlive the header it came in.  That is the opposite of the
-// request side, and the asymmetry is deliberate: a server reads many
-// cookies and keeps none, a client reads one and keeps it.
 pub struct CookieSpec
     name: Str
     value: Str
     attrs: cookieattr.CookieAttrs
 
-// Parse a `Set-Cookie` response header.
+// Parse a `Set-Cookie` response header as the server grammar of RFC
+// 6265bis section 4.1.1 writes it.
 //
-// Answers a `Result`, unlike `parse_header`: this is the header a
-// server WRITES, so a program reading its own output and finding it
-// malformed has a bug worth hearing about.  A client parsing a header
-// from elsewhere that wants browser behaviour uses
-// `parse_set_cookie_lenient`.
+// A header is refused when the lenient reading of
+// `parse_set_cookie_lenient` ignores anything, when the pair has no
+// `=`, and when `cookiewrite.set_cookie` would refuse to write the
+// cookie: a name that is not a token, a value that is not a
+// `cookie-value`, or one of the problems `cookieattr.check_attrs`
+// reports.  The first problem is the error.  An attribute this package
+// does not know is ignored, as the grammar's `extension-av` allows.
 pub fn parse_set_cookie(header: Str) -> Result<CookieSpec, cookieattr.CookieError> []
-    todo("cookie-nv.cookieparse.parse_set_cookie")
+    let r = read_set_cookie(header, true)
+    match list.first(r.1)
+        Some(e) => Err(e)
+        None    => Ok(r.0)
 
-// Parse a `Set-Cookie` the way a browser does: never fail, ignore what
-// cannot be read, and record what was ignored.
+// Parse a `Set-Cookie` the way a browser does, answering the cookie and
+// what was ignored on the way.
 //
-// RFC 6265bis § 5.4 is a list of "if the value is not X, ignore this
-// attribute and continue" clauses, and a client that refused instead
-// would reject cookies every browser accepts.  The ignored attributes
-// come back so a caller can see what a server got wrong.
+// This is RFC 6265bis section 5.6.  A header holding a control byte
+// other than a tab, or with an empty name and an empty value, is
+// ignored whole: the cookie answered has an empty name and the list
+// holds `CookieMalformed`.  A pair with no `=` is a cookie with an
+// empty name and the whole pair as its value.  An attribute whose value
+// the rule cannot read is ignored and listed: an `Expires` that is not
+// a date, a `Max-Age` that is not an integer, a `Domain` that is empty
+// and a `Path` that does not begin with `/`.
 pub fn parse_set_cookie_lenient(header: Str) -> (CookieSpec, [cookieattr.CookieError]) []
-    todo("cookie-nv.cookieparse.parse_set_cookie_lenient")
+    read_set_cookie(header, false)
 
-// Parse an `Expires` value in any of the spellings RFC 6265 § 5.1.1
-// accepts.
+// Parse an `Expires` value by the cookie-date rules of RFC 6265bis
+// section 5.1.1.
 //
-// Its date parser is deliberately not a date parser: it splits on
-// delimiters, finds a time, a day, a month name and a year in any
-// order, and applies a two-digit-year rule where 69 is 2069 and 70 is
-// 1970.  That is not RFC 1123 and not ISO 8601, and calendar-nv's own
-// parsers would refuse most of what browsers accept — which is why this
-// one is here rather than delegated.
+// The value is split into tokens at the delimiter bytes, which are
+// every byte other than a digit, a letter, `:` and a byte above 0x7E.
+// The first token that is a time `h:m:s` sets the time, the first of
+// one or two digits sets the day, the first that begins with a month's
+// three-letter name sets the month, and the first of two to four digits
+// sets the year, each followed by anything that is not a digit.  A year
+// from 70 to 99 is 1970 to 1999 and one from 0 to 69 is 2000 to 2069.
+// A date with a part missing, a day outside the month, a year before
+// 1601, or a time past 23:59:59 is refused.
 pub fn parse_expires(text: Str) -> Result<civil.CivilDateTime, cookieattr.CookieError> []
-    todo("cookie-nv.cookieparse.parse_expires")
+    var hms = (0 - 1, 0, 0)
+    var day = 0 - 1
+    var month = 0 - 1
+    var year = 0 - 1
+    for tok in date_tokens(text)
+        if hms.0 < 0
+            match time_token(tok)
+                Some(t) =>
+                    hms = t
+                    continue
+                None    => ()
+        if day < 0
+            let d = digits_token(tok, 1, 2)
+            if d >= 0
+                day = d
+                continue
+        if month < 0
+            let m = month_token(tok)
+            if m > 0
+                month = m
+                continue
+        if year < 0
+            year = digits_token(tok, 2, 4)
+    if year >= 70 and year <= 99
+        year = year + 1900
+    else if year >= 0 and year <= 69
+        year = year + 2000
+    if hms.0 < 0 or day < 1 or month < 0 or year < 1601
+        return Err(CookieBadExpires(text))
+    let d = civil.date(year, month, day)
+    let t = civil.time_of(hms.0, hms.1, hms.2, 0)
+    match (d, t)
+        (Ok(dd), Ok(tt)) => Ok(civil.datetime(dd, tt))
+        _                => Err(CookieBadExpires(text))
 
-// How many cookies a `Cookie` header holds, without building the list.
-//
-// For a caller bounding what it will accept: RFC 6265bis § 5.6 suggests
-// a limit and a request with four hundred cookies is not a browser.
+// How many cookies a `Cookie` header holds, counted as `parse_header`
+// counts them.
 pub fn count(header: Str) -> Int []
-    todo("cookie-nv.cookieparse.count")
+    list.len(parse_header(header).pairs)
+
+// ── The Cookie header ────────────────────────────────────────────────
+
+// The offset of the next `;` at or after `i`, or the header's length.
+fn piece_end(h: Str, i: Int) -> Int
+    str.index_from(h, ";", i) ?? str.len(h)
+
+// Whether a byte is a space or a tab.
+fn is_ws(b: Int) -> Bool
+    b == ' ' or b == '\t'
+
+// The first offset in `[i, end)` that is not a space or a tab, or `end`.
+fn trim_left(h: Str, i: Int, end: Int) -> Int
+    for k in i..end
+        if not is_ws(str.byte_at_or(h, k, 0))
+            return k
+    end
+
+// The offset just past the last byte in `[i, end)` that is not a space
+// or a tab, or `i`.
+fn trim_right(h: Str, i: Int, end: Int) -> Int
+    var k = end
+    for _ in i..end
+        if not is_ws(str.byte_at_or(h, k - 1, 0))
+            return k
+        k = k - 1
+    i
+
+// Whether `[i, end)` holds only spaces and tabs.
+fn blank(h: Str, i: Int, end: Int) -> Bool
+    trim_left(h, i, end) == end
+
+// The pair in the piece `[i, end)`, or `None` when it has no `=` or an
+// empty name.
+fn pair_in(h: Str, i: Int, end: Int) -> ?CookiePair
+    let eq = str.index_from(h, "=", i) ?? end
+    if eq >= end
+        return None
+    let n0 = trim_left(h, i, eq)
+    let n1 = trim_right(h, n0, eq)
+    if n1 == n0
+        return None
+    let v0 = trim_left(h, eq + 1, end)
+    let v1 = trim_right(h, v0, end)
+    Some(CookiePair { name: CookieSpan { start: n0, len: n1 - n0 },
+                      value: CookieSpan { start: v0, len: v1 - v0 } })
+
+// ── Set-Cookie ───────────────────────────────────────────────────────
+
+// Whether a header holds a byte RFC 6265bis section 5.6 step 1 refuses:
+// a control byte other than a tab.
+fn has_control(h: Str) -> ?Int
+    for i in 0..str.len(h)
+        let b = str.byte_at_or(h, i, 0)
+        if b < ' ' and b != '\t' or b == 127
+            return Some(i)
+    None
+
+// A `Set-Cookie` read, strictly or as a browser reads it.  Strictly,
+// the grammar of section 4.1.1 is checked as well and the first entry
+// of the list is the refusal.
+fn read_set_cookie(h: Str, strict: Bool) -> (CookieSpec, [cookieattr.CookieError])
+    var errs: [cookieattr.CookieError] = []
+    let nothing = CookieSpec { name: "", value: "", attrs: cookieattr.empty_attrs() }
+    match has_control(h)
+        Some(at) =>
+            list.push(errs, CookieMalformed(at))
+            return (nothing, errs)
+        None     => ()
+    let n = str.len(h)
+    let end = piece_end(h, 0)
+    let eq = str.index_from(h, "=", 0) ?? n
+    var name = ""
+    var value = ""
+    if eq < end
+        name = str.trim(str.slice(h, 0, eq))
+        value = str.trim(str.slice(h, eq + 1, end))
+    else
+        value = str.trim(str.slice(h, 0, end))
+        if strict
+            list.push(errs, CookieMalformed(end))
+    if name == "" and value == ""
+        list.push(errs, CookieMalformed(0))
+        return (nothing, errs)
+    let attrs = read_attrs(h, end, errs)
+    if strict
+        list.append(errs, cookieattr.check_attrs(name, attrs))
+        match value_error(value)
+            Some(e) => list.push(errs, e)
+            None    => ()
+    (CookieSpec { name: name, value: value, attrs: attrs }, errs)
+
+// The first byte of a value that the `cookie-value` grammar refuses: a
+// run of `cookie-octet`, optionally inside one pair of double quotes.
+pub fn value_error(value: Str) -> ?cookieattr.CookieError []
+    var lo = 0
+    var hi = str.len(value)
+    if hi >= 2 and str.byte_at_or(value, 0, 0) == '"' and str.byte_at_or(value, hi - 1, 0) == '"'
+        lo = 1
+        hi = hi - 1
+    for i in lo..hi
+        let b = str.byte_at_or(value, i, 0)
+        if not cookieattr.value_byte_ok(b)
+            return Some(CookieBadValueByte(i, b))
+    None
+
+// The attributes after the pair, which ends at `from`.  Each attribute
+// the rules of section 5.6 ignore is pushed onto `errs`.
+fn read_attrs(h: Str, from: Int, var errs: [cookieattr.CookieError]) -> cookieattr.CookieAttrs
+    var domain = ""
+    var path_value = ""
+    var expires: ?civil.CivilDateTime = None
+    var max_age: ?Int = None
+    var secure = false
+    var http_only = false
+    var same_site = CookieSameSiteAbsent
+    var partitioned = false
+    let n = str.len(h)
+    var i = from + 1
+    for _ in 0..n + 1
+        if i > n
+            break
+        let end = piece_end(h, i)
+        let eq = str.index_from(h, "=", i) ?? end
+        let key = str.lower(str.trim(str.slice(h, i, (if eq < end then eq else end))))
+        var val = ""
+        if eq < end
+            val = str.trim(str.slice(h, eq + 1, end))
+        i = end + 1
+        if key == "expires"
+            match parse_expires(val)
+                Ok(dt) =>
+                    expires = Some(dt)
+                Err(e) => list.push(errs, e)
+        else if key == "max-age"
+            match max_age_of(val)
+                Some(s) =>
+                    max_age = Some(s)
+                None    => list.push(errs, CookieBadMaxAge(val))
+        else if key == "domain"
+            if val == ""
+                list.push(errs, CookieBadDomain(val))
+            else
+                domain = domain_of(val)
+        else if key == "path"
+            if str.byte_at_or(val, 0, 0) == '/'
+                path_value = val
+            else
+                path_value = ""
+                list.push(errs, CookieBadPath(val))
+        else if key == "secure"
+            secure = true
+        else if key == "httponly"
+            http_only = true
+        else if key == "samesite"
+            same_site = cookieattr.same_site_named(val)
+        else if key == "partitioned"
+            partitioned = true
+    var life = CookieLifeSession
+    match expires
+        Some(dt) =>
+            life = CookieLifeExpires(dt)
+        None     => ()
+    match max_age
+        Some(s) =>
+            life = CookieLifeMaxAge(s)
+        None    => ()
+    CookieAttrs { domain: domain, path_value: path_value, life: life,
+                  secure: secure, http_only: http_only,
+                  same_site: same_site, partitioned: partitioned }
+
+// A `Domain` value as RFC 6265bis section 5.6.3 stores it: one leading
+// dot removed, and lowercased.
+fn domain_of(val: Str) -> Str
+    if str.byte_at_or(val, 0, 0) == '.'
+        return str.lower(str.slice(val, 1, str.len(val)))
+    str.lower(val)
+
+// A `Max-Age` value by RFC 6265bis section 5.6.2: an optional `-` and
+// one or more digits, and nothing else.
+fn max_age_of(val: Str) -> ?Int
+    var from = 0
+    if str.byte_at_or(val, 0, 0) == '-'
+        from = 1
+    if from >= str.len(val)
+        return None
+    for i in from..str.len(val)
+        let b = str.byte_at_or(val, i, 0)
+        if b < '0' or b > '9'
+            return None
+    str.to_int(val)
+
+// ── The cookie-date rules ────────────────────────────────────────────
+
+// Whether a byte is one of section 5.1.1's delimiters: a tab, or a
+// byte in 0x20-0x2F, 0x3B-0x40, 0x5B-0x60 or 0x7B-0x7E.
+fn is_delimiter(b: Int) -> Bool
+    b == '\t' or b >= 0x20 and b <= 0x2F or b >= 0x3B and b <= 0x40 or b >= 0x5B and b <= 0x60 or b >= 0x7B and b <= 0x7E
+
+// The date tokens of a cookie-date: the runs of bytes between
+// delimiters.
+fn date_tokens(text: Str) -> [Str]
+    var out: [Str] = []
+    var start = 0 - 1
+    let n = str.len(text)
+    for i in 0..n + 1
+        let b = str.byte_at_or(text, i, ' ')
+        if is_delimiter(b)
+            if start >= 0
+                list.push(out, str.slice(text, start, i))
+                start = 0 - 1
+        else if start < 0
+            start = i
+    out
+
+// The number formed by the leading digits of `tok`, when there are from
+// `lo` to `hi` of them and the next byte, if any, is not a digit; -1
+// otherwise.
+fn digits_token(tok: Str, lo: Int, hi: Int) -> Int
+    let k = digit_run(tok, 0)
+    if k < lo or k > hi
+        return 0 - 1
+    str.to_int(str.slice(tok, 0, k)) ?? 0 - 1
+
+// How many digits stand at `i` in `s`.
+fn digit_run(s: Str, i: Int) -> Int
+    var k = 0
+    for j in i..str.len(s)
+        let b = str.byte_at_or(s, j, 0)
+        if b < '0' or b > '9'
+            break
+        k = k + 1
+    k
+
+// A `time-field` token: `1*2DIGIT ":" 1*2DIGIT ":" 1*2DIGIT`, followed
+// by anything that is not a digit.
+fn time_token(tok: Str) -> ?(Int, Int, Int)
+    let h = digit_run(tok, 0)
+    if h < 1 or h > 2 or str.byte_at_or(tok, h, 0) != ':'
+        return None
+    let m0 = h + 1
+    let m = digit_run(tok, m0)
+    if m < 1 or m > 2 or str.byte_at_or(tok, m0 + m, 0) != ':'
+        return None
+    let s0 = m0 + m + 1
+    let s = digit_run(tok, s0)
+    if s < 1 or s > 2
+        return None
+    Some((number(tok, 0, h), number(tok, m0, m0 + m), number(tok, s0, s0 + s)))
+
+// The decimal number `s[lo:hi]`, which holds digits only.
+fn number(s: Str, lo: Int, hi: Int) -> Int
+    str.to_int(str.slice(s, lo, hi)) ?? 0
+
+// The month a token begins with, 1 to 12, compared case-insensitively
+// on its first three bytes, or 0.
+fn month_token(tok: Str) -> Int
+    if str.len(tok) < 3
+        return 0
+    let head = str.lower(str.slice(tok, 0, 3))
+    let names = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+    for m in 0..12
+        if names[m] == head
+            return m + 1
+    0

@@ -1,142 +1,119 @@
-// cookieattr.nv — a cookie's attributes, and the rules that make the
-// combination legal.
+// cookieattr.nv — a cookie's attributes, and the rules that make a
+// combination of them one a browser accepts.
 //
-// Every body here is a `todo()`; the signatures are the design.
+// A `Set-Cookie` header whose attributes contradict each other is not
+// reported anywhere.  The browser ignores the cookie, the next request
+// arrives without it, and the server sees a request with no session.
+// RFC 6265bis names five such combinations:
 //
-// **THE LOAD-BEARING INTERFACE OF THIS PACKAGE IS `check_attrs`.**  A
-// `Set-Cookie` header whose attributes disagree with each other is not
-// an error anybody ever sees: the browser silently ignores the cookie,
-// the next request arrives without it, and what the server observes is
-// "no session" rather than "a cookie I wrote wrongly".  Every one of
-// these is a real, shipped bug and every one of them is a comparison
-// this function can make:
+//   a `__Host-` name with a `Domain` attribute (section 4.1.3.2);
+//   a `__Host-` name whose `Path` is not `/` (section 4.1.3.2);
+//   a `__Secure-` or `__Host-` name without `Secure` (section 4.1.3);
+//   `SameSite=None` without `Secure` (section 5.6.7);
+//   `Partitioned` without `Secure` (the CHIPS draft, section 2.1).
 //
-//   `__Host-sid` with a `Domain`         — ignored by every browser
-//   `__Host-sid` with `Path=/admin`      — ignored, `Path=/` is required
-//   `__Secure-sid` without `Secure`      — ignored
-//   `SameSite=None` without `Secure`     — ignored since Chrome 80
-//   `Partitioned` without `Secure`       — ignored
-//   `Max-Age=0` meaning "expire now"     — correct, and easy to write
-//                                          by accident when a caller
-//                                          meant "session cookie"
+// `check_attrs` reports each of them, and every writer in `cookiewrite`
+// refuses a set that fails it.
 //
-// So `cookiewrite.set_cookie` answers a `Result` and refuses these, and
-// this module is where the rules live so a caller can ask about an
-// attribute set it is still building.
-//
-// THE PREFIXES ARE THE ONLY HOST-LOCKING COOKIES HAVE.  A cookie set by
-// `evil.example.com` for `Domain=example.com` is sent to
-// `bank.example.com`, and `bank.example.com` cannot tell it apart from
-// one it set itself — cookies have no origin, only a domain, and that
-// has been true since 1994.  `__Host-` is the fix: a browser accepts
-// such a cookie only with `Secure`, `Path=/` and NO `Domain`, which
-// makes it host-locked.  A library that writes `__Host-` cookies with a
-// `Domain` has produced a name that LOOKS locked and is not there at
-// all, which is worse than not using the prefix.
+// The prefixes are the only host locking cookies have.  A cookie has a
+// domain and no origin, so a cookie set by one host for a parent domain
+// reaches every host under that domain.  A browser accepts a `__Host-`
+// cookie only with `Secure`, `Path=/` and no `Domain`, which confines
+// it to the host that set it.
 
+use std.list
+use std.str
 use civil
 
 // Where a cookie's name or value is, as a byte range into the header
 // string the caller owns.
-//
-// A request carries a handful of cookies and a session cookie is a
-// couple of hundred bytes; copying all of them to read one is what a
-// parser that answers strings makes a caller do on every request.
 pub struct CookieSpan
     start: Int
     len: Int
 
 // The `SameSite` attribute.
 pub enum CookieSameSite
-    // The attribute is absent.  NOT the same as `Lax`: absent means the
-    // browser's own default applies, which is `Lax` in current browsers
-    // and was `None` in older ones — so a cookie that must be
-    // cross-site has to say `None` explicitly rather than say nothing.
+    // The attribute is absent.  The browser's own default then applies,
+    // which is `Lax` in current browsers and was `None` in older ones.
+    // A cookie that must be sent cross-site says `None` explicitly.
     CookieSameSiteAbsent
     // Sent only on same-site requests.
     CookieSameSiteStrict
     // Sent on same-site requests and on top-level cross-site
-    // navigations that are safe methods.  What a session cookie wants.
+    // navigations with a safe method.
     CookieSameSiteLax
-    // Sent on every request. REQUIRES `Secure`; a browser ignores the
-    // cookie otherwise, which is the rule `check_attrs` enforces.
+    // Sent on every request.  A browser accepts it only with `Secure`.
     CookieSameSiteNone
 
 // Which name prefix a cookie carries, if any.
 //
-// Derived from the name rather than set beside it: the prefix IS the
-// first bytes of the name, and a field that could disagree with the
-// name is a field that will.
+// The prefix is the first bytes of the name, so it is read off the name
+// with `prefix_of` rather than stored beside it.
 pub enum CookiePrefix
     // No prefix.
     CookiePrefixNone
     // `__Secure-`: the cookie must carry `Secure`.
     CookiePrefixSecure
     // `__Host-`: the cookie must carry `Secure`, must have `Path=/`,
-    // and must have NO `Domain`. The only host-locked cookie there is.
+    // and must have no `Domain`.
     CookiePrefixHost
 
 // How long a cookie lives.
 //
-// A sum rather than two optional fields, because `Expires` and
-// `Max-Age` are not independent: a cookie with both has `Max-Age` win
-// (RFC 6265 § 5.3), and a caller who set both meant one of them.
+// A cookie with both `Expires` and `Max-Age` is governed by `Max-Age`
+// (RFC 6265bis section 5.7 step 3), so the two are one choice here.
 pub enum CookieLife
-    // A session cookie: neither attribute. Gone when the browser
-    // closes, which the browser decides and no header can.
+    // A session cookie: neither attribute.  The browser discards it
+    // when it closes.
     CookieLifeSession
-    // `Expires`, as a civil datetime in UTC.
-    //
-    // Civil and not an instant, because that is what the header holds
-    // and because a `core` package has no clock to turn one into the
-    // other.
+    // `Expires`, as a civil date-time in UTC.
     CookieLifeExpires(at: civil.CivilDateTime)
-    // `Max-Age`, in seconds. Zero or negative means "expire now", which
-    // is how a cookie is deleted.
+    // `Max-Age`, in seconds.  Zero or less means the cookie expires at
+    // once, which is how a cookie is deleted.
     CookieLifeMaxAge(seconds: Int)
 
 // Everything a `Set-Cookie` can say past the name and the value.
 pub struct CookieAttrs
-    // `Domain`. Empty means the attribute is absent, which is NOT the
-    // same as `Domain=<the origin's host>`: an absent `Domain` is a
-    // host-only cookie, and a present one is sent to every subdomain.
-    // That difference is the whole of the `__Host-` rule.
+    // `Domain`, or empty when the attribute is absent.  An absent
+    // `Domain` makes a host-only cookie, sent to the host that set it
+    // and to no subdomain.  A present one is sent to every subdomain.
     domain: Str
-    // `Path`. Empty means absent, and the browser then computes a
-    // default from the request path — which is almost never what a
-    // caller wanted, so `defaults()` sets `/`.
+    // `Path`, or empty when the attribute is absent.  With no `Path`
+    // the browser computes a default from the request path.
     path_value: Str
     life: CookieLife
     secure: Bool
     http_only: Bool
     same_site: CookieSameSite
-    // `Partitioned` — CHIPS. A cookie partitioned by the top-level
-    // site, so an embedded widget's cookie is a different cookie per
-    // embedding site. REQUIRES `Secure`.
+    // `Partitioned`: the cookie is kept separately for each top-level
+    // site that embeds the page setting it.  A browser accepts it only
+    // with `Secure`.
     partitioned: Bool
 
-// The attributes a session cookie should have, which is the set most
-// callers want and almost none write.
+// The attributes a session cookie should have.
 //
-// `Path=/`, `Secure`, `HttpOnly`, `SameSite=Lax`, no `Domain`, session
-// lifetime. Every one of those is a decision, and the reason to publish
-// the combination is that a caller who builds a `CookieAttrs` field by
-// field will leave two of them off.
+// `Path=/`, `Secure`, `HttpOnly`, `SameSite=Lax`, no `Domain`, and a
+// session lifetime.
 pub fn defaults() -> CookieAttrs []
-    todo("cookie-nv.cookieattr.defaults")
+    CookieAttrs { domain: "", path_value: "/", life: CookieLifeSession,
+                  secure: true, http_only: true,
+                  same_site: CookieSameSiteLax, partitioned: false }
 
-// The attributes with no attribute set at all.
+// The attributes with none set: no `Domain`, no `Path`, a session
+// lifetime and every flag off.
 //
-// For a caller parsing a `Set-Cookie` into this shape, and for one that
-// genuinely wants a bare cookie. Not the same as `defaults()`, and the
-// two functions are separate so that a call site says which was meant.
+// This is what a `Set-Cookie` with no attributes parses into.  It is
+// not `defaults()`.
 pub fn empty_attrs() -> CookieAttrs []
-    todo("cookie-nv.cookieattr.empty_attrs")
+    CookieAttrs { domain: "", path_value: "", life: CookieLifeSession,
+                  secure: false, http_only: false,
+                  same_site: CookieSameSiteAbsent, partitioned: false }
 
 // Which prefix a name carries.
 //
-// The comparison is case-sensitive: `__Host-` is the prefix and
-// `__host-` is an ordinary name, which is what browsers implement.
+// The comparison is case-sensitive, as RFC 6265bis section 4.1.3 has
+// a server write it: `__Host-` is the prefix and `__host-` is an
+// ordinary name.
 //
 // ```novo
 // use cookieattr
@@ -148,63 +125,79 @@ pub fn empty_attrs() -> CookieAttrs []
 //         CookiePrefixNone   => println("ordinary")
 // ```
 pub fn prefix_of(name: Str) -> CookiePrefix []
-    todo("cookie-nv.cookieattr.prefix_of")
+    if str.starts_with(name, "__Host-")
+        return CookiePrefixHost
+    if str.starts_with(name, "__Secure-")
+        return CookiePrefixSecure
+    CookiePrefixNone
 
-// Why an attribute set is not one a browser will accept.
+// Why a cookie is not one a browser will accept.
 pub enum CookieError
-    // A `__Host-` cookie with a `Domain`. The prefix means host-locked
-    // and `Domain` means sent to every subdomain; a browser resolves
-    // the contradiction by ignoring the cookie.
+    // A `__Host-` cookie with a `Domain`.
     CookieHostPrefixWithDomain(name: Str, domain: Str)
     // A `__Host-` cookie whose `Path` is not exactly `/`.
     CookieHostPrefixBadPath(name: Str, path_value: Str)
     // A `__Host-` or `__Secure-` cookie without `Secure`.
     CookiePrefixNeedsSecure(name: Str)
-    // `SameSite=None` without `Secure`. Rejected by every current
-    // browser, and the single most common cause of a cookie that
-    // "works locally and not in production" — because production is
-    // the deployment that is cross-site.
+    // `SameSite=None` without `Secure`.
     CookieSameSiteNoneNeedsSecure(name: Str)
     // `Partitioned` without `Secure`.
     CookiePartitionedNeedsSecure(name: Str)
-    // A byte the cookie-name grammar (RFC 6265 § 4.1.1, a `token`) does
-    // not allow: a control, a space, or one of the separators
-    // `()<>@,;:\"/[]?={}`.
+    // A byte the cookie-name grammar does not allow, at a byte offset
+    // into the name.  A name is an RFC 9110 token (RFC 6265bis section
+    // 4.1.1): no control, no space, and none of `()<>@,;:\"/[]?={}`.
     CookieBadNameByte(at: Int, byte: Int)
-    // A byte the cookie-value grammar does not allow: a control, a
-    // space, a comma, a semicolon, a backslash, or an unbalanced quote.
+    // A byte the cookie-value grammar does not allow, at a byte offset
+    // into the value: a control, a space, `"` other than a pair around
+    // the whole value, `,`, `;`, `\`, or a byte above 0x7E.
     CookieBadValueByte(at: Int, byte: Int)
-    // A `Domain` that is not a hostname, or that begins with a dot in a
-    // position the grammar does not allow.
+    // A `Domain` that is not a host name, or one the request host does
+    // not domain-match when a jar stores it.
     CookieBadDomain(domain: Str)
-    // A `Path` that does not begin with `/`.
+    // A `Path` that does not begin with `/`, or that holds a control
+    // byte or `;`.
     CookieBadPath(path_value: Str)
-    // An `Expires` this parser could not read as any of RFC 6265
-    // § 5.1.1's accepted spellings.
+    // An `Expires` that none of RFC 6265bis section 5.1.1's rules read
+    // as a date.
     CookieBadExpires(text: Str)
     // A `Max-Age` that is not an integer.
     CookieBadMaxAge(text: Str)
-    // A header that is not a cookie at all: no `=`, or an empty name.
+    // A header that is not a cookie: no `=`, an empty name, a control
+    // byte, or a cookie longer than a jar stores.  `at` is the byte
+    // offset where reading stopped.
     CookieMalformed(at: Int)
-    // A signed or encrypted cookie whose tag did not verify, or whose
-    // key is not among the ones offered.
+    // A signed or encrypted cookie that did not verify under any key
+    // offered, or a key or nonce of the wrong length for the cipher.
     CookieSealBroken(name: Str)
 
 // The standard `Error` implementation, so a refused cookie is reported
 // by anything that reports errors.
 impl Error for CookieError
-    // The one-line report: the cookie's name, the attribute at fault,
-    // and what a browser does with the combination. The last part is
-    // the useful half — "a browser ignores this cookie" is what tells a
-    // caller why their session vanished.
+    // One line: the cookie's name or the text at fault, what is wrong,
+    // and what a browser does with it.
     fn message(self) -> Str
-        todo("cookie-nv.cookieattr.CookieError.message")
+        match self
+            CookieHostPrefixWithDomain(n, d) => "${n}: a __Host- cookie has no Domain, and a browser ignores it with Domain=${d}"
+            CookieHostPrefixBadPath(n, p)    => "${n}: a __Host- cookie has Path=/, and a browser ignores it with Path=${p}"
+            CookiePrefixNeedsSecure(n)       => "${n}: the name's prefix requires Secure, and a browser ignores the cookie without it"
+            CookieSameSiteNoneNeedsSecure(n) => "${n}: SameSite=None requires Secure, and a browser ignores the cookie without it"
+            CookiePartitionedNeedsSecure(n)  => "${n}: Partitioned requires Secure, and a browser ignores the cookie without it"
+            CookieBadNameByte(at, b)         => "at ${at}: byte ${b} is not allowed in a cookie name"
+            CookieBadValueByte(at, b)        => "at ${at}: byte ${b} is not allowed in a cookie value"
+            CookieBadDomain(d)               => "`${d}` is not a Domain this cookie may have"
+            CookieBadPath(p)                 => "`${p}` is not a Path: a Path begins with /"
+            CookieBadExpires(t)              => "`${t}` is not a date"
+            CookieBadMaxAge(t)               => "`${t}` is not a Max-Age: it is a whole number of seconds"
+            CookieMalformed(at)              => "at ${at}: not a cookie"
+            CookieSealBroken(n)              => "${n}: the sealed value did not verify under any key"
 
-// Check a name and its attributes against every rule a browser applies.
+// Check a name and its attributes against the grammar and against every
+// rule a browser applies.
 //
-// Answers every problem rather than the first, because a caller
-// building a cookie wrongly has usually got two attributes wrong and
-// fixing one at a time is two deploys.
+// Answers every problem, in this order: the name, the `Domain`, the
+// `Path`, then `browser_rules`.  An empty list means the combination is
+// one a browser accepts.  The value is not an argument; the writers in
+// `cookiewrite` check it.
 //
 // ```novo
 // use cookieattr
@@ -215,47 +208,165 @@ impl Error for CookieError
 //     println(string_of_int(list.len(cookieattr.check_attrs("sid", a))))
 // ```
 pub fn check_attrs(name: Str, a: CookieAttrs) -> [CookieError] []
-    todo("cookie-nv.cookieattr.check_attrs")
+    var out: [CookieError] = []
+    match name_error(name)
+        Some(e) => list.push(out, e)
+        None    => ()
+    if str.len(a.domain) > 0 and not domain_text_ok(a.domain)
+        list.push(out, CookieBadDomain(a.domain))
+    if str.len(a.path_value) > 0 and not path_text_ok(a.path_value)
+        list.push(out, CookieBadPath(a.path_value))
+    list.append(out, browser_rules(name, a))
+    out
 
-// Whether a name and its attributes pass every rule.
+// The rules a browser applies when it stores a cookie: the two
+// prefixes, `SameSite=None` and `Partitioned`, each of which needs
+// `Secure`.
+//
+// These are the rules a browser applies to a header it has already
+// parsed, so the grammar is not among them.  `cookiejar.store` refuses
+// a cookie that fails one.
+pub fn browser_rules(name: Str, a: CookieAttrs) -> [CookieError] []
+    var out: [CookieError] = []
+    match prefix_of(name)
+        CookiePrefixNone   => ()
+        CookiePrefixSecure =>
+            if not a.secure
+                list.push(out, CookiePrefixNeedsSecure(name))
+        CookiePrefixHost   =>
+            if not a.secure
+                list.push(out, CookiePrefixNeedsSecure(name))
+            if str.len(a.domain) > 0
+                list.push(out, CookieHostPrefixWithDomain(name, a.domain))
+            if a.path_value != "/"
+                list.push(out, CookieHostPrefixBadPath(name, a.path_value))
+    if not a.secure
+        if same_site_is_none(a.same_site)
+            list.push(out, CookieSameSiteNoneNeedsSecure(name))
+        if a.partitioned
+            list.push(out, CookiePartitionedNeedsSecure(name))
+    out
+
+// Whether a name and its attributes pass every rule `check_attrs`
+// applies.
 pub fn attrs_ok(name: Str, a: CookieAttrs) -> Bool []
-    todo("cookie-nv.cookieattr.attrs_ok")
+    list.len(check_attrs(name, a)) == 0
 
-// The attributes a name's prefix REQUIRES, applied to a set.
+// The attributes a name's prefix requires, applied to a set.
 //
-// The fixing half of `check_attrs`: a caller that wants a `__Host-`
-// cookie and does not want to remember the three rules hands its
-// attributes through this and gets a set that passes. Publishing the
-// repair beside the check is what stops a caller from turning the check
-// off.
+// A `__Secure-` name gains `Secure`.  A `__Host-` name gains `Secure`
+// and `Path=/` and loses its `Domain`.  A set with `SameSite=None` or
+// `Partitioned` gains `Secure`.  Nothing else changes, so a grammar
+// error `check_attrs` reports is still the caller's to fix.
 pub fn apply_prefix(name: Str, a: CookieAttrs) -> CookieAttrs []
-    todo("cookie-nv.cookieattr.apply_prefix")
+    var domain = a.domain
+    var path_value = a.path_value
+    var secure = a.secure or a.partitioned or same_site_is_none(a.same_site)
+    match prefix_of(name)
+        CookiePrefixNone   => ()
+        CookiePrefixSecure =>
+            secure = true
+        CookiePrefixHost   =>
+            secure = true
+            domain = ""
+            path_value = "/"
+    CookieAttrs { domain: domain, path_value: path_value, life: a.life,
+                  secure: secure, http_only: a.http_only,
+                  same_site: a.same_site, partitioned: a.partitioned }
 
-// Whether a byte may appear in a cookie NAME.
+// Whether a byte may appear in a cookie name.
 //
-// RFC 6265 § 4.1.1 says a name is an RFC 9110 `token`: no control, no
-// space, and none of `()<>@,;:\"/[]?={}`.
+// RFC 6265bis section 4.1.1 makes a name an RFC 9110 `token`: a
+// visible ASCII byte other than `()<>@,;:\"/[]?={}`.
 pub fn name_byte_ok(byte: Int) -> Bool []
-    todo("cookie-nv.cookieattr.name_byte_ok")
+    if byte <= ' ' or byte >= 127
+        return false
+    not str.contains("()<>@,;:\\\"/[]?={}", str.from_byte(byte))
 
-// Whether a byte may appear in a cookie VALUE.
+// Whether a byte may appear in a cookie value.
 //
-// A different set from the name's, and the difference matters: a value
-// may hold `/`, `:` and `=`, which is why a base64 or a JWT goes in a
-// cookie unencoded and a name may not.
+// RFC 6265bis section 4.1.1's `cookie-octet`: a visible ASCII byte
+// other than `"`, `,`, `;` and `\`.  A value may hold `/`, `:` and `=`,
+// which a name may not.
 pub fn value_byte_ok(byte: Int) -> Bool []
-    todo("cookie-nv.cookieattr.value_byte_ok")
+    if byte <= ' ' or byte >= 127
+        return false
+    byte != '"' and byte != ',' and byte != ';' and byte != '\\'
 
-// The `SameSite` attribute's value as it is spelled in a header.
+// The `SameSite` attribute's value as a header spells it, or the empty
+// string for an absent one.
 pub fn same_site_name(s: CookieSameSite) -> Str []
-    todo("cookie-nv.cookieattr.same_site_name")
+    match s
+        CookieSameSiteAbsent => ""
+        CookieSameSiteStrict => "Strict"
+        CookieSameSiteLax    => "Lax"
+        CookieSameSiteNone   => "None"
 
-// The `SameSite` a header's value names, or `CookieSameSiteAbsent` for
-// one this package does not know.
+// The `SameSite` a header's value names, compared case-insensitively,
+// or `CookieSameSiteAbsent` for a value this package does not know.
 //
-// An unknown value is treated as absent rather than refused, because
-// that is what RFC 6265bis § 5.4.7 says a browser does — and a parser
-// that refused would disagree with the browser about a header they both
-// read.
+// RFC 6265bis section 5.6.7 has a browser treat an unknown value as
+// the default, which is what absent means.
 pub fn same_site_named(text: Str) -> CookieSameSite []
-    todo("cookie-nv.cookieattr.same_site_named")
+    let t = str.lower(text)
+    if t == "strict"
+        return CookieSameSiteStrict
+    if t == "lax"
+        return CookieSameSiteLax
+    if t == "none"
+        return CookieSameSiteNone
+    CookieSameSiteAbsent
+
+// Whether a `SameSite` is `None`.
+fn same_site_is_none(s: CookieSameSite) -> Bool
+    match s
+        CookieSameSiteNone => true
+        _                  => false
+
+// The first thing wrong with a name, if anything is.
+fn name_error(name: Str) -> ?CookieError
+    if str.len(name) == 0
+        return Some(CookieMalformed(0))
+    for i in 0..str.len(name)
+        let b = str.byte_at_or(name, i, 0)
+        if not name_byte_ok(b)
+            return Some(CookieBadNameByte(i, b))
+    None
+
+// Whether a `Domain` value is a host name: labels of ASCII letters,
+// digits, `-` and `_`, separated by single dots, with one optional
+// leading dot.
+fn domain_text_ok(d: Str) -> Bool
+    var from = 0
+    if str.byte_at_or(d, 0, 0) == '.'
+        from = 1
+    let n = str.len(d)
+    if from >= n
+        return false
+    var label = 0
+    for i in from..n
+        let b = str.byte_at_or(d, i, 0)
+        if b == '.'
+            if label == 0
+                return false
+            label = 0
+        else if host_byte_ok(b)
+            label = label + 1
+        else
+            return false
+    true
+
+// Whether a byte may stand in a host name label.
+fn host_byte_ok(b: Int) -> Bool
+    b >= 'a' and b <= 'z' or b >= 'A' and b <= 'Z' or b >= '0' and b <= '9' or b == '-' or b == '_'
+
+// Whether a `Path` value may be written: it begins with `/` and holds
+// no control byte and no `;` (RFC 6265bis section 4.1.1, `path-value`).
+fn path_text_ok(p: Str) -> Bool
+    if str.byte_at_or(p, 0, 0) != '/'
+        return false
+    for i in 0..str.len(p)
+        let b = str.byte_at_or(p, i, 0)
+        if b < ' ' or b == 127 or b == ';'
+            return false
+    true

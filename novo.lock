@@ -3,13 +3,13 @@
 [calendar-nv]
 source = "registry"
 url = "https://registry.novo-lang.org"
-req = "^0.0.2"
-version = "0.0.2"
-hash = "96409f46f3946d4b40437754edc7e8a6f044521cfe286f5723ff10205a581f48"
+req = "^0.2.0"
+version = "0.2.0"
+hash = "027078a3906cbb69ad3cad0130b301a60bc5e855ec1ebc3dc0d6f4e7f2932d8c"
 
 [crypto-nv]
 source = "registry"
 url = "https://registry.novo-lang.org"
-req = "^0.1.1"
-version = "0.1.3"
-hash = "b0bf3b342541097171db05e4fb7e0000b023bee24040eb5476398beeb9176d35"
+req = "^0.1.6"
+version = "0.1.6"
+hash = "ca4cad680d78976cdd161a97607b3a3f3f9c9ee9f97bda6584570475f5da499f"
