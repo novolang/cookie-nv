@@ -10,12 +10,6 @@ header, the client-side storage model, and cookies that are signed or
 encrypted. [session-nv](https://novo-lang.org/packages/session-nv) is
 built on it.
 
-**Status: NOT IMPLEMENTED — interface only.** Every function is
-declared with its full signature, but every body is a `todo()` that
-panics when called. The package is published so its design can be
-reviewed and depended on before it is implemented. Version 0.1.0 will
-be the first working release.
-
 ## What a cookie is
 
 A server sends a **`Set-Cookie`** response header. It carries one name,
@@ -24,7 +18,7 @@ keeps the cookie and which requests it goes on. A client sends a
 **`Cookie`** request header. It carries a list of names and values and
 no attributes at all, so a server never learns what a client knows
 about a cookie it stored. The two headers are two grammars, defined in
-RFC 6265bis section 4.1.1 and section 4.2.1.
+RFC 6265bis sections 4.1.1 and 4.2.1.
 
 The attributes are these.
 
@@ -51,8 +45,8 @@ accepted only with `Secure`. A name beginning `__Host-` is accepted
 only with `Secure`, with `Path=/` and with no `Domain`, which locks the
 cookie to the single host that set it.
 
-A client keeps its cookies in a **jar**. Section 5.3 is the algorithm
-for storing one and section 5.4 is the order for sending them. Two
+A client keeps its cookies in a **jar**. Section 5.7 is the algorithm
+for storing one and section 5.8.3 is the order for sending them. Two
 boundary rules decide which cookies a request carries.
 **Domain-matching** (section 5.1.3) holds when the request host equals
 the cookie's domain or ends with a dot and that domain.
@@ -103,16 +97,13 @@ fn main() [io]
         Err(e) => println(e.message())
 ```
 
-Build and test with `novo pkg build` and `novo test`. Today `novo test`
-fails on purpose: every test reaches a
-`not implemented: cookie-nv.<module>.<fn>` panic. The tests are the
-specification the implementation will have to satisfy.
+Build and test with `novo pkg build` and `novo test`.
 
 ## What the package contains
 
 | Module | Contents |
 | --- | --- |
-| `cookieattr` | The attributes as a value, the name prefixes, the error type, and the check that says whether a combination is one a client accepts. |
+| `cookieattr` | The attributes as a value, the name prefixes, the error type, and the checks that say whether a combination is one a client accepts. |
 | `cookieparse` | Reading: the `Cookie` header as spans over the caller's string, and `Set-Cookie` as a value, strictly or tolerantly. |
 | `cookiewrite` | Writing: a `Set-Cookie` header, the header that deletes a cookie, and a `Cookie` header from a list of pairs. |
 | `cookiejar` | The client storage model: storing, sending, expiring, and the domain and path matching rules on their own. |
@@ -128,16 +119,21 @@ as a new string. Use the span form on a request path, and the string
 form when the value outlives the header.
 
 **`cookieparse.parse_set_cookie` reads a header a program wrote
-itself**, and answers a `Result`, so a bug in that program is reported.
-**`parse_set_cookie_lenient` reads a header somebody else wrote.** It
-answers the cookie it managed to read and a list of what was wrong
-with it.
+itself**, and answers a `Result`. It refuses anything
+`cookiewrite.set_cookie` would refuse to write, so a bug in that
+program is reported. **`parse_set_cookie_lenient` reads a header
+somebody else wrote**, by the algorithm of section 5.6. It answers the
+cookie it managed to read and a list of the attributes it ignored.
 
 **`cookiewrite.set_cookie` writes a header and checks it.**
 `set_cookie_unchecked` writes the same header and checks nothing, for a
 proxy passing a header through and for a test that wants a bad one.
 `set_cookie_into` appends to a buffer the caller owns, and
 `set_cookie_len` gives the length without writing anything.
+
+**`cookieattr.check_attrs` checks the grammar and the browser rules
+together.** `browser_rules` checks the browser rules alone, which is
+what `cookiejar.store` applies to a header it has already parsed.
 
 **`cookiejar` is for a client**, such as an HTTP client following
 redirects across hosts. A server that sets and reads its own cookies
@@ -154,7 +150,7 @@ needs `cookieparse` and `cookiewrite` and nothing else.
    without `Secure`, `SameSite=None` without `Secure`, and
    `Partitioned` without `Secure`. The server then sees a request with
    no cookie rather than an error. RFC 6265bis sections 4.1.3 and
-   5.4.7 are the rules. `cookieattr.check_attrs` reports all of them
+   5.6.7 and the CHIPS draft are the rules. `cookieattr.check_attrs` reports all of them
    that apply, and every writer in `cookiewrite` answers a `Result`
    rather than emitting one.
 2. **`check_attrs` answers every problem, not the first.**
@@ -164,14 +160,14 @@ needs `cookieparse` and `cookiewrite` and nothing else.
 3. **`SameSite` absent is not `SameSite=Lax`.** Absent means the
    client's own default applies, and that default has changed over
    time. A cookie that must travel cross-site has to say
-   `SameSite=None` and `Secure` (section 5.4.7).
+   `SameSite=None` and `Secure` (section 5.6.7).
 4. **An absent `Path` is not `Path=/`.** With no `Path` the client
    computes a default from the request path: everything up to the last
    `/` (section 5.1.4). That scopes the cookie to a directory, which is
    almost never what the caller meant, so `cookieattr.defaults()` sets
    `/` explicitly. `cookiejar.default_path` is that computation.
 5. **A cookie is identified by name, domain and path together**
-   (section 5.3). Deleting one means sending a `Set-Cookie` with the
+   (section 5.7). Deleting one means sending a `Set-Cookie` with the
    same three and an expiry in the past. `cookiewrite.delete_cookie`
    takes the attributes the cookie was set with for that reason.
 6. **The matching rules are boundary comparisons, and a prefix test is
@@ -201,23 +197,34 @@ needs `cookieparse` and `cookiewrite` and nothing else.
     A repeated nonce under one key breaks every authenticated
     encryption scheme. `cookieseal.nonce_len` says how many bytes to
     bring.
-12. **`cookieparse.parse_header` never fails.** A pair it cannot read
-    is skipped and counted, which is what section 5.5 has a client do.
-    A server that refused a whole header over one odd pair would log
+12. **`cookieparse.parse_header` never fails.** A piece with no `=` or
+    an empty name is skipped and counted. A server that refused a whole header over one odd pair would log
     out every user carrying a stale cookie from another application on
     the same domain.
 13. **A jar's public-suffix check is a function the caller supplies.**
-    Section 5.3 step 5 says a `Domain` that is a public suffix, such as
+    Section 5.7 says a `Domain` that is a public suffix, such as
     `co.uk`, must be rejected. `cookiejar.no_public_suffixes()` answers
-    `false` for every name, so a jar built on it accepts `Domain=co.uk`,
-    and `jar_rules_are_unsafe` answers `true` so a program can check at
-    start-up. See "What is not included".
+    `false` for every name, so a jar built on it accepts `Domain=co.uk`.
+    `jar_rules_are_unsafe` answers `true` when the check calls any of
+    `com`, `net`, `org` and `co.uk` not a public suffix, so a program
+    can check at start-up. See "What is not included".
 14. **A jar has no clock.** `store`, `cookies_for`, `prune` and
     `is_expired` all take the current time as a `CivilDateTime`
     argument.
 15. **Reading a jar does not prune it.** `cookies_for` omits expired
     cookies and leaves them in place. `prune` is the call that removes
     them.
+16. **A jar keeps a cookie for at most 400 days.** Section 5.7 caps
+    `Expires` and `Max-Age` at 400 days from the time the cookie is
+    stored, and `store` applies the cap.
+17. **A cookie may have an empty name.** Section 5.6 reads
+    `Set-Cookie: abc` as a cookie with an empty name and the value
+    `abc`, and a jar sends it back as `abc`. RFC 6265 ignored such a
+    cookie.
+18. **Quoting a value makes no byte legal.** The quoted form of the
+    `cookie-value` grammar admits the same bytes as the bare form, so
+    `cookiewrite.quote_value` answers a legal value as written and
+    refuses any other.
 
 ## Sizes and limits
 
@@ -226,7 +233,9 @@ needs `cookieparse` and `cookiewrite` and nothing else.
 | Signing and encryption key length | 32 bytes (`cookieseal.key_len`) |
 | Master secret length | 32 bytes (`cookieseal.master_len`) |
 | Nonce length | whatever the caller's cipher declares (`cookieseal.nonce_len`) |
-| Sealed value encoding | base64url, no padding, tag first |
+| Sealed value encoding | base64url, no padding: the 32-byte tag then the value, or the nonce then the cipher's output |
+| Jar bounds (`no_public_suffixes`) | 3000 cookies, 50 per domain, 4096 bytes of name and value |
+| Longest lifetime a jar keeps | 400 days |
 | Prefixes recognised | `__Secure-` and `__Host-`, compared case-sensitively |
 
 ## What is not included
@@ -283,55 +292,36 @@ needs `cookieparse` and `cookiewrite` and nothing else.
 ## Tests
 
 ```bash
-novo test tests/cookieattr_tests.nv   # the combinations a client drops
-novo test tests/cookiejar_tests.nv    # both parsers, and the matching boundaries
-novo test tests/cookieseal_tests.nv   # signing, encryption, and a rotated key
+novo test tests/cookieattr_tests.nv     # the combinations a client drops, and the prefix examples
+novo test tests/cookieparse_tests.nv    # both parsers and the cookie-date rules
+novo test tests/cookiewrite_tests.nv    # the writers
+novo test tests/cookiejar_tests.nv      # the matching boundaries, storing and sending
+novo test tests/cookieseal_tests.nv     # signing, encryption, and a rotated key
+novo test tests/httpstate_tests.nv      # the http-state working group's corpus
+novo test tests/differential_tests.nv   # Python's http.cookies and email.utils
+bash tests/coverage.sh                  # line coverage over src/
 ```
 
-The normative cases come from RFC 6265bis: section 4.1.1 for the
-grammars, sections 5.1.3 and 5.1.4 for the matching boundaries,
-section 5.3 for the storage algorithm, section 5.4 for the send order
-and section 4.1.3 for the prefixes. The reference implementations are
-Rust's `cookie` crate, for the shape of a signed and a private jar and
-for the derivation of two keys from one master, and Python's
-`http.cookies`, for how much tolerance a real parser needs. The five
-`Expires` spellings of section 5.1.1 come from the `http-cookies` test
-corpus.
+The normative cases come from RFC 6265bis: section 3.1's example
+exchange, section 4.1.1 for the grammars, section 4.1.3's prefix
+examples, sections 5.1.3 and 5.1.4 for the matching boundaries,
+section 5.6 for reading a `Set-Cookie`, section 5.7 for storing and
+section 5.8.3 for the send order.
 
-The suite asserts that each of the five silently dropped combinations
-is refused, that `notexample.com` does not domain-match `example.com`,
-that `/foobar` does not path-match `/foo`, that a `Cookie` header with
-one bad pair still yields the good ones, that a value signed for one
-cookie name does not verify under another, and that a rotated key set
-still verifies a cookie signed by the previous key.
+`tests/httpstate_tests.nv` is the cookie parser corpus of the IETF
+http-state working group, written into the suite by
+`tools/http_state.py`: 195 cases, each a set of `Set-Cookie` headers
+and the `Cookie` header a client then sends, and the corpus's 15
+cookie-date examples. The corpus was written against RFC 6265. The
+tool lists the 23 cases RFC 6265bis answers differently, all of them
+cookies with an empty name, and leaves out the cases the corpus
+disables itself.
 
-The tests compile today and fail at run, each on the
-`not implemented: cookie-nv.<module>.<fn>` panic that is its body. That
-is the expected state of an interface release. They turn green one at a
-time as bodies land.
-
-## Implementation status
-
-| Item | Implemented |
-| --- | --- |
-| `cookieattr.CookieSpan`, `.CookieSameSite`, `.CookiePrefix`, `.CookieLife`, `.CookieAttrs`, `.CookieError` | the types are declared |
-| `cookieattr.defaults`, `.empty_attrs`, `.prefix_of` | no |
-| `cookieattr.check_attrs`, `.attrs_ok`, `.apply_prefix` | no |
-| `cookieattr.name_byte_ok`, `.value_byte_ok`, `.same_site_name`, `.same_site_named` | no |
-| `cookieattr.CookieError.message` | no |
-| `cookieparse.parse_header`, `.get`, `.get_str`, `.get_all`, `.count` | no |
-| `cookieparse.span_str`, `.span_empty`, `.unquote` | no |
-| `cookieparse.parse_set_cookie`, `.parse_set_cookie_lenient`, `.parse_expires` | no |
-| `cookiewrite.set_cookie`, `.set_cookie_unchecked`, `.set_cookie_into`, `.set_cookie_len` | no |
-| `cookiewrite.delete_cookie`, `.format_expires`, `.cookie_header`, `.quote_value` | no |
-| `cookiejar.jar`, `.jar_from`, `.entries`, `.jar_len`, `.store`, `.remove` | no |
-| `cookiejar.cookies_for`, `.header_for`, `.prune`, `.clear_session`, `.is_expired` | no |
-| `cookiejar.no_public_suffixes`, `.rules_with_suffixes`, `.jar_rules_are_unsafe` | no |
-| `cookiejar.domain_matches`, `.path_matches`, `.default_path`, `.host_is_ip`, `.canonical_host` | no |
-| `cookieseal.one_key`, `.keys_of`, `.rotate`, `.key_count`, `.key_len` | no |
-| `cookieseal.sign`, `.verify`, `.peek_signed`, `.is_sealed` | no |
-| `cookieseal.cipher`, `.encrypt`, `.decrypt`, `.nonce_len` | no |
-| `cookieseal.derive`, `.master_len` | no |
+`tests/differential_tests.nv` is written by `tools/differential.py`.
+Python's `http.cookies` reads eleven `Cookie` headers and each value is
+compared. Python's `email.utils` writes 25 dates, which
+`format_expires` must write the same way and `parse_expires` must read
+back.
 
 ## Licence
 

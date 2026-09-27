@@ -5,6 +5,63 @@ All notable changes to cookie-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
+## 0.1.0 — 2026-09-27
+
+The first implementation of the interface published as 0.0.1: the
+attribute rules, both parsers, the writers, the storage model and
+signed and encrypted values.
+
+### Added
+
+- `cookieattr.browser_rules` answers the rules a browser applies to a
+  cookie it has already parsed: the two prefixes, `SameSite=None` and
+  `Partitioned`, each of which needs `Secure`.  `check_attrs` is the
+  name's grammar, the `Domain`'s, the `Path`'s, then these.
+- `cookieparse.value_error` answers the first byte of a value the
+  `cookie-value` grammar refuses.
+- `tests/httpstate_tests.nv` holds 195 cases of the http-state working
+  group's cookie parser corpus and its 15 cookie-date examples, written
+  by `tools/http_state.py`.  The tool lists the cases RFC 6265bis
+  answers differently.
+- `tests/differential_tests.nv` checks the `Cookie` parser against
+  Python's `http.cookies` and `format_expires` against its
+  `email.utils`, and is written by `tools/differential.py`.
+
+### Changed
+
+These change what code written against 0.0.x observes.
+
+- `parse_set_cookie_lenient` follows RFC 6265bis section 5.6: a pair
+  with no `=` is a cookie with an empty name, and a header with a
+  control byte other than a tab is ignored whole.
+- `parse_set_cookie` refuses whatever `cookiewrite.set_cookie` would
+  refuse to write, the prefix rules included, as well as anything the
+  lenient reading ignores.
+- `cookiewrite.quote_value` never adds quotes.  The quoted form of the
+  `cookie-value` grammar admits the same bytes as the bare form, so a
+  legal value is answered as written and any other is refused.
+- `cookiejar.domain_matches` compares ignoring ASCII case and keeps a
+  trailing dot, as a browser does with a `Domain` attribute.
+  `canonical_host` is the call that removes one.
+- `cookiejar.store` reads the `Domain` as `cookieparse` answers it,
+  without a leading dot, and caps a lifetime at 400 days (RFC 6265bis
+  section 5.7).  A stored `Max-Age` becomes an expiry time.
+- `cookiejar.jar_rules_are_unsafe` answers `true` when the public-suffix
+  test calls any of `com`, `net`, `org` and `co.uk` not a public
+  suffix.
+- An empty key set signs nothing: `cookieseal.sign` answers the empty
+  string.
+
+### Toolchain
+
+- The toolchain floor is 0.13.0, and the dependencies are calendar-nv
+  `^0.2.0` and crypto-nv `^0.1.6`.
+- Two bindings name their type, `let box: Bytes = c.seal(...)` in
+  `encrypt` and `let opened: ?Bytes = c.open_box(...)` in `decrypt`,
+  and each `Bytes` sum is bound to a name before it is passed to a
+  call.  The 0.13.0 compiler frees these shapes and leaks the shorter
+  ones.
+
 ## 0.0.2 — 2026-09-15
 
 README rewritten to the package README style guide (docs/writing-a-readme.md); no change to the interface.
