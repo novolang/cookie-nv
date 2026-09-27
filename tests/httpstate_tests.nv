@@ -1,0 +1,640 @@
+// httpstate_tests.nv — the http-state working group's cookie parser
+// corpus, and its cookie-date examples.
+//
+// Written by tools/http_state.py from https://github.com/abarth/http-state
+// at commit 155e45c6.  Each case stores the corpus's `Set-Cookie` values
+// in a jar as the response to http://home.example.org:8888/cookie-parser
+// and compares the `Cookie` header the jar writes for the next request
+// with the one the corpus expects.  The time is 2012-01-01, when the
+// corpus's future dates were in the future.  Cases the corpus disables,
+// and the ones RFC 6265bis answers differently, are listed with their
+// reason in the tool.
+
+use std.test
+use civil
+use cookieparse
+use cookiejar
+use cookiewrite
+
+// The entries of the Public Suffix List the corpus's hosts reach.
+fn suffix(d: Str) -> Bool
+    d == "org" or d == "com" or d == "net"
+
+fn now() -> civil.CivilDateTime
+    civil.datetime(civil.date(2012, 1, 1)!, civil.midnight())
+
+// The Cookie header the jar writes after storing `received`.
+fn run(received: [Str], host: Str, path_value: Str) -> Str
+    var j = cookiejar.jar(cookiejar.rules_with_suffixes(suffix))
+    for h in received
+        let spec = cookieparse.parse_set_cookie_lenient(h).0
+        match cookiejar.store(j, spec, "home.example.org", "/cookie-parser", now())
+            Ok(next) =>
+                j = next
+            Err(_)   => ()
+    cookiejar.header_for(j, host, path_value, false, now())
+
+@test
+fn test_http_state_attribute() [io]
+    test.case("ATTRIBUTE0001")
+    test.assert(run(["foo=bar; Secure"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0002")
+    test.assert(run(["foo=bar; seCURe"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0003")
+    test.assert(run(["foo=bar; \"Secure\""], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("ATTRIBUTE0004")
+    test.assert(run(["foo=bar; Secure="], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0005")
+    test.assert(run(["foo=bar; Secure=aaaa"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0006")
+    test.assert(run(["foo=bar; Secure qux"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("ATTRIBUTE0007")
+    test.assert(run(["foo=bar; Secure =aaaaa"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0008")
+    test.assert(run(["foo=bar; Secure= aaaaa"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0009")
+    test.assert(run(["foo=bar; Secure; qux"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0010")
+    test.assert(run(["foo=bar; Secure;qux"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0011")
+    test.assert(run(["foo=bar; Secure    ; qux"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0012")
+    test.assert(run(["foo=bar;                Secure"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0013")
+    test.assert(run(["foo=bar;       Secure     ;"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0014")
+    test.assert(run(["foo=bar; Path"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("ATTRIBUTE0015")
+    test.assert(run(["foo=bar; Path="], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("ATTRIBUTE0016")
+    test.assert(run(["foo=bar; Path=/"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("ATTRIBUTE0017")
+    test.assert(run(["foo=bar; Path=/qux"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0018")
+    test.assert(run(["foo=bar; Path    =/qux"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0019")
+    test.assert(run(["foo=bar; Path=    /qux"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0020")
+    test.assert(run(["foo=bar; Path=/qux      ; taz"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0021")
+    test.assert(run(["foo=bar; Path=/qux; Path=/"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("ATTRIBUTE0022")
+    test.assert(run(["foo=bar; Path=/; Path=/qux"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0023")
+    test.assert(run(["foo=bar; Path=/qux; Path=/cookie-parser-result"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("ATTRIBUTE0024")
+    test.assert(run(["foo=bar; Path=/cookie-parser-result; Path=/qux"],
+        "home.example.org",
+        "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0025")
+    test.assert(run(["foo=bar; qux; Secure"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("ATTRIBUTE0026")
+    test.assert(run(["foo=bar; qux=\"aaa;bbb\"; Secure"], "home.example.org", "/cookie-parser-result") == "")
+
+@test
+fn test_http_state_charset() [io]
+    test.case("CHARSET0001")
+    test.assert(run(["foo=春节回家路·春运完全手册"], "home.example.org", "/cookie-parser-result") == "foo=春节回家路·春运完全手册")
+    test.case("CHARSET0002")
+    test.assert(run(["春节回=家路·春运完全手册"], "home.example.org", "/cookie-parser-result") == "春节回=家路·春运完全手册")
+    test.case("CHARSET0003")
+    test.assert(run(["春节回=家路·春运; 完全手册"], "home.example.org", "/cookie-parser-result") == "春节回=家路·春运")
+    test.case("CHARSET0004")
+    test.assert(run(["foo=\"春节回家路·春运完全手册\""], "home.example.org", "/cookie-parser-result") == "foo=\"春节回家路·春运完全手册\"")
+
+@test
+fn test_http_state_chromium() [io]
+    test.case("CHROMIUM0001")
+    test.assert(run(["a=b"], "home.example.org", "/cookie-parser-result") == "a=b")
+    test.case("CHROMIUM0002")
+    test.assert(run(["aBc=\"zzz \"   ;"], "home.example.org", "/cookie-parser-result") == "aBc=\"zzz \"")
+    test.case("CHROMIUM0003")
+    test.assert(run(["aBc=\"zzz \" ;"], "home.example.org", "/cookie-parser-result") == "aBc=\"zzz \"")
+    test.case("CHROMIUM0004")
+    test.assert(run(["aBc=\"zz;pp\" ; ;"], "home.example.org", "/cookie-parser-result") == "aBc=\"zz")
+    test.case("CHROMIUM0005")
+    test.assert(run(["aBc=\"zz ;"], "home.example.org", "/cookie-parser-result") == "aBc=\"zz")
+    test.case("CHROMIUM0006")
+    test.assert(run(["aBc=\"zzz \"   \"ppp\"  ;"], "home.example.org", "/cookie-parser-result") == "aBc=\"zzz \"   \"ppp\"")
+    test.case("CHROMIUM0007")
+    test.assert(run(["aBc=\"zzz \"   \"ppp\" ;"], "home.example.org", "/cookie-parser-result") == "aBc=\"zzz \"   \"ppp\"")
+    test.case("CHROMIUM0008")
+    test.assert(run(["aBc=A\"B ;"], "home.example.org", "/cookie-parser-result") == "aBc=A\"B")
+    test.case("CHROMIUM0011")
+    test.assert(run(["a=\"B"], "home.example.org", "/cookie-parser-result") == "a=\"B")
+    test.case("CHROMIUM0013")
+    test.assert(run(["ABC=;  path = /"], "home.example.org", "/cookie-parser-result") == "ABC=")
+    test.case("CHROMIUM0014")
+    test.assert(run(["  A  = BC  ;foo;;;   bar"], "home.example.org", "/cookie-parser-result") == "A=BC")
+    test.case("CHROMIUM0015")
+    test.assert(run(["  A=== BC  ;foo;;;   bar"], "home.example.org", "/cookie-parser-result") == "A=== BC")
+    test.case("CHROMIUM0016")
+    test.assert(run(["foo=\"zohNumRKgI0oxyhSsV3Z7D\"  ; expires=Sun, 18-Apr-2027 21:06:29 GMT ; path=/  ;  "],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=\"zohNumRKgI0oxyhSsV3Z7D\"")
+    test.case("CHROMIUM0017")
+    test.assert(run(["foo=zohNumRKgI0oxyhSsV3Z7D  ; expires=Sun, 18-Apr-2027 21:06:29 GMT ; path=/  ;  "],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=zohNumRKgI0oxyhSsV3Z7D")
+    test.case("CHROMIUM0018")
+    test.assert(run(["    "], "home.example.org", "/cookie-parser-result") == "")
+    test.case("CHROMIUM0019")
+    test.assert(run(["a=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        "home.example.org",
+        "/cookie-parser-result") == "a=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    test.case("CHROMIUM0021")
+    test.assert(run([""], "home.example.org", "/cookie-parser-result") == "")
+
+@test
+fn test_http_state_comma() [io]
+    test.case("COMMA0001")
+    test.assert(run(["foo=bar, baz=qux"], "home.example.org", "/cookie-parser-result") == "foo=bar, baz=qux")
+    test.case("COMMA0002")
+    test.assert(run(["foo=\"bar, baz=qux\""], "home.example.org", "/cookie-parser-result") == "foo=\"bar, baz=qux\"")
+    test.case("COMMA0003")
+    test.assert(run(["foo=bar; b,az=qux"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("COMMA0004")
+    test.assert(run(["foo=bar; baz=q,ux"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("COMMA0005")
+    test.assert(run(["foo=bar; Max-Age=50,399"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("COMMA0006")
+    test.assert(run(["foo=bar; Expires=Fri, 07 Aug 2019 08:04:19 GMT"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("COMMA0007")
+    test.assert(run(["foo=bar; Expires=Fri 07 Aug 2019 08:04:19 GMT, baz=qux"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar")
+
+@test
+fn test_http_state_domain() [io]
+    test.case("DOMAIN0001")
+    test.assert(run(["foo=bar; domain=home.example.org"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0002")
+    test.assert(run(["foo=bar; domain=home.example.org"], "sibling.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0003")
+    test.assert(run(["foo=bar; domain=.home.example.org"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0004")
+    test.assert(run(["foo=bar; domain=home.example.org"], "subdomain.home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0005")
+    test.assert(run(["foo=bar; domain=.home.example.org"], "subdomain.home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0006")
+    test.assert(run(["foo=bar; domain=.home.example.org"], "sibling.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0007")
+    test.assert(run(["foo=bar; domain=sibling.example.org"], "sibling.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0008")
+    test.assert(run(["foo=bar; domain=.example.org"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0009")
+    test.assert(run(["foo=bar; domain=example.org"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0010")
+    test.assert(run(["foo=bar; domain=..home.example.org"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0011")
+    test.assert(run(["foo=bar; domain=home..example.org"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0012")
+    test.assert(run(["foo=bar; domain=  .home.example.org"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0013")
+    test.assert(run(["foo=bar; domain=  .  home.example.org"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0014")
+    test.assert(run(["foo=bar; domain=home.example.org."], "home.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0015")
+    test.assert(run(["foo=bar; domain=home.example.org.."], "home.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0016")
+    test.assert(run(["foo=bar; domain=home.example.org ."], "home.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0017")
+    test.assert(run(["foo=bar; domain=.org"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0018")
+    test.assert(run(["foo=bar; domain=.org."], "home.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0019")
+    test.assert(run(["foo=bar; domain=home.example.org", "foo2=bar2; domain=.home.example.org"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar; foo2=bar2")
+    test.case("DOMAIN0020")
+    test.assert(run(["foo2=bar2; domain=.home.example.org", "foo=bar; domain=home.example.org"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo2=bar2; foo=bar")
+    test.case("DOMAIN0021")
+    test.assert(run(["foo=bar; domain=\"home.example.org\""], "home.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0022")
+    test.assert(run(["foo=bar; domain=home.example.org", "foo2=bar2; domain=.example.org"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar; foo2=bar2")
+    test.case("DOMAIN0023")
+    test.assert(run(["foo2=bar2; domain=.example.org", "foo=bar; domain=home.example.org"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo2=bar2; foo=bar")
+    test.case("DOMAIN0024")
+    test.assert(run(["foo=bar; domain=.example.org; domain=home.example.org"],
+        "sibling.example.org",
+        "/cookie-parser-result") == "")
+    test.case("DOMAIN0025")
+    test.assert(run(["foo=bar; domain=home.example.org; domain=.example.org"],
+        "sibling.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0026")
+    test.assert(run(["foo=bar; domain=home.eXaMpLe.org"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0027")
+    test.assert(run(["foo=bar; domain=home.example.org:8888"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0028")
+    test.assert(run(["foo=bar; domain=subdomain.home.example.org"],
+        "subdomain.home.example.org",
+        "/cookie-parser-result") == "")
+    test.case("DOMAIN0029")
+    test.assert(run(["foo=bar"], "subdomain.home.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0031")
+    test.assert(run(["foo=bar; domain=home.example.org; domain=.example.org"],
+        "sibling.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0033")
+    test.assert(run(["foo=bar; domain=home.example.org"], "hoMe.eXaMplE.org", "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0034")
+    test.assert(run(["foo=bar; domain=home.example.org; domain=home.example.com"],
+        "home.example.org",
+        "/cookie-parser-result") == "")
+    test.case("DOMAIN0035")
+    test.assert(run(["foo=bar; domain=home.example.com; domain=home.example.org"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0036")
+    test.assert(run(["foo=bar; domain=home.example.org; domain=home.example.com; domain=home.example.org"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0037")
+    test.assert(run(["foo=bar; domain=home.example.com; domain=home.example.org; domain=home.example.com"],
+        "home.example.org",
+        "/cookie-parser-result") == "")
+    test.case("DOMAIN0038")
+    test.assert(run(["foo=bar; domain=home.example.org; domain=home.example.org"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0039")
+    test.assert(run(["foo=bar; domain=home.example.org; domain=example.org"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0040")
+    test.assert(run(["foo=bar; domain=example.org; domain=home.example.org"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("DOMAIN0041")
+    test.assert(run(["foo=bar; domain=.sibling.example.org"], "sibling.example.org", "/cookie-parser-result") == "")
+    test.case("DOMAIN0042")
+    test.assert(run(["foo=bar; domain=.sibling.home.example.org"],
+        "sibling.home.example.org",
+        "/cookie-parser-result") == "")
+
+@test
+fn test_http_state_general() [io]
+    test.case("0001")
+    test.assert(run(["foo=bar"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("0002")
+    test.assert(run(["foo=bar; Expires=Fri, 07 Aug 2019 08:04:19 GMT"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("0003")
+    test.assert(run(["foo=bar; Expires=Fri, 07 Aug 2007 08:04:19 GMT",
+        "foo2=bar2; Expires=Fri, 07 Aug 2027 08:04:19 GMT"],
+    "home.example.org", "/cookie-parser-result") == "foo2=bar2")
+    test.case("0005")
+    test.assert(run(["foo=bar; max-age=10000;"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("0006")
+    test.assert(run(["foo=bar; max-age=0;"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("0007")
+    test.assert(run(["foo=bar; version=1;"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("0008")
+    test.assert(run(["foo=bar; version=1000;"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("0009")
+    test.assert(run(["foo=bar; customvalue=1000;"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("0010")
+    test.assert(run(["foo=bar; secure;"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("0011")
+    test.assert(run(["foo=bar; customvalue=\"1000 or more\";"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("0012")
+    test.assert(run(["foo=bar; customvalue=\"no trailing semicolon\""],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("0013")
+    test.assert(run(["foo=bar", "foo=qux"], "home.example.org", "/cookie-parser-result") == "foo=qux")
+    test.case("0014")
+    test.assert(run(["foo1=bar", "foo2=qux"], "home.example.org", "/cookie-parser-result") == "foo1=bar; foo2=qux")
+    test.case("0015")
+    test.assert(run(["a=b", "z=y"], "home.example.org", "/cookie-parser-result") == "a=b; z=y")
+    test.case("0016")
+    test.assert(run(["z=y", "a=b"], "home.example.org", "/cookie-parser-result") == "z=y; a=b")
+    test.case("0017")
+    test.assert(run(["z=y, a=b"], "home.example.org", "/cookie-parser-result") == "z=y, a=b")
+    test.case("0018")
+    test.assert(run(["z=y; foo=bar, a=b"], "home.example.org", "/cookie-parser-result") == "z=y")
+    test.case("0019")
+    test.assert(run(["foo=b;max-age=3600, c=d;path=/"], "home.example.org", "/cookie-parser-result") == "foo=b")
+    test.case("0020")
+    test.assert(run(["a=b", "=", "c=d"], "home.example.org", "/cookie-parser-result") == "a=b; c=d")
+    test.case("0022")
+    test.assert(run(["a=b", "x=", "c=d"], "home.example.org", "/cookie-parser-result") == "a=b; x=; c=d")
+
+@test
+fn test_http_state_mozilla() [io]
+    test.case("MOZILLA0001")
+    test.assert(run(["foo=bar; max-age=-1"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("MOZILLA0002")
+    test.assert(run(["foo=bar; max-age=0"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("MOZILLA0003")
+    test.assert(run(["foo=bar; expires=Thu, 10 Apr 1980 16:33:12 GMT"],
+        "home.example.org",
+        "/cookie-parser-result") == "")
+    test.case("MOZILLA0004")
+    test.assert(run(["foo=bar; max-age=60"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("MOZILLA0005")
+    test.assert(run(["foo=bar; max-age=-20"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("MOZILLA0006")
+    test.assert(run(["foo=bar; max-age=60"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("MOZILLA0007")
+    test.assert(run(["foo=bar; expires=Thu, 10 Apr 1980 16:33:12 GMT"],
+        "home.example.org",
+        "/cookie-parser-result") == "")
+    test.case("MOZILLA0008")
+    test.assert(run(["foo=bar; max-age=60", "foo1=bar; max-age=60"], "home.example.org", "/cookie-parser-result") == "foo=bar; foo1=bar")
+    test.case("MOZILLA0009")
+    test.assert(run(["foo=bar; max-age=60", "foo1=bar; max-age=60", "foo=differentvalue; max-age=0"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo1=bar")
+    test.case("MOZILLA0010")
+    test.assert(run(["foo=bar; max-age=60",
+        "foo1=bar; max-age=60",
+        "foo=differentvalue; max-age=0",
+        "foo2=evendifferentvalue; max-age=0"],
+    "home.example.org", "/cookie-parser-result") == "foo1=bar")
+    test.case("MOZILLA0011")
+    test.assert(run(["test=parser; domain=.parser.test; ;; ;=; ,,, ===,abc,=; abracadabra! max-age=20;=;;"],
+        "home.example.org",
+        "/cookie-parser-result") == "")
+    test.case("MOZILLA0013")
+    test.assert(run(["test=kill; max-age=0", "five; max-age=0"], "home.example.org", "/cookie-parser-result") == "")
+
+@test
+fn test_http_state_name() [io]
+    test.case("NAME0001")
+    test.assert(run(["a=bar"], "home.example.org", "/cookie-parser-result") == "a=bar")
+    test.case("NAME0002")
+    test.assert(run(["1=bar"], "home.example.org", "/cookie-parser-result") == "1=bar")
+    test.case("NAME0003")
+    test.assert(run(["\$=bar"], "home.example.org", "/cookie-parser-result") == "\$=bar")
+    test.case("NAME0004")
+    test.assert(run(["!a=bar"], "home.example.org", "/cookie-parser-result") == "!a=bar")
+    test.case("NAME0005")
+    test.assert(run(["@a=bar"], "home.example.org", "/cookie-parser-result") == "@a=bar")
+    test.case("NAME0006")
+    test.assert(run(["#a=bar"], "home.example.org", "/cookie-parser-result") == "#a=bar")
+    test.case("NAME0007")
+    test.assert(run(["\$a=bar"], "home.example.org", "/cookie-parser-result") == "\$a=bar")
+    test.case("NAME0008")
+    test.assert(run(["%a=bar"], "home.example.org", "/cookie-parser-result") == "%a=bar")
+    test.case("NAME0009")
+    test.assert(run(["^a=bar"], "home.example.org", "/cookie-parser-result") == "^a=bar")
+    test.case("NAME0010")
+    test.assert(run(["&a=bar"], "home.example.org", "/cookie-parser-result") == "&a=bar")
+    test.case("NAME0011")
+    test.assert(run(["*a=bar"], "home.example.org", "/cookie-parser-result") == "*a=bar")
+    test.case("NAME0012")
+    test.assert(run(["(a=bar"], "home.example.org", "/cookie-parser-result") == "(a=bar")
+    test.case("NAME0013")
+    test.assert(run([")a=bar"], "home.example.org", "/cookie-parser-result") == ")a=bar")
+    test.case("NAME0014")
+    test.assert(run(["-a=bar"], "home.example.org", "/cookie-parser-result") == "-a=bar")
+    test.case("NAME0015")
+    test.assert(run(["_a=bar"], "home.example.org", "/cookie-parser-result") == "_a=bar")
+    test.case("NAME0016")
+    test.assert(run(["+=bar"], "home.example.org", "/cookie-parser-result") == "+=bar")
+    test.case("NAME0018")
+    test.assert(run(["a =bar"], "home.example.org", "/cookie-parser-result") == "a=bar")
+    test.case("NAME0019")
+    test.assert(run(["\"a=bar"], "home.example.org", "/cookie-parser-result") == "\"a=bar")
+    test.case("NAME0020")
+    test.assert(run(["\"a=b\"=bar"], "home.example.org", "/cookie-parser-result") == "\"a=b\"=bar")
+    test.case("NAME0021")
+    test.assert(run(["\"a=b\"=bar", "\"a=qux"], "home.example.org", "/cookie-parser-result") == "\"a=qux")
+    test.case("NAME0022")
+    test.assert(run(["   foo=bar"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("NAME0024")
+    test.assert(run(["\$Version=1; foo=bar"], "home.example.org", "/cookie-parser-result") == "\$Version=1")
+    test.case("NAME0026")
+    test.assert(run(["foo=bar    "], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("NAME0027")
+    test.assert(run(["foo=bar    ;"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("NAME0029")
+    test.assert(run(["="], "home.example.org", "/cookie-parser-result") == "")
+    test.case("NAME0030")
+    test.assert(run(["foo bar=baz"], "home.example.org", "/cookie-parser-result") == "foo bar=baz")
+
+@test
+fn test_http_state_optional_domain() [io]
+    test.case("OPTIONAL_DOMAIN0030")
+    test.assert(run(["foo=bar; domain="], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("OPTIONAL_DOMAIN0041")
+    test.assert(run(["foo=bar; domain=example.org; domain="], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("OPTIONAL_DOMAIN0042")
+    test.assert(run(["foo=bar; domain=foo.example.org; domain="], "home.example.org", "/cookie-parser-result") == "")
+    test.case("OPTIONAL_DOMAIN0043")
+    test.assert(run(["foo=bar; domain=foo.example.org; domain="],
+        "subdomain.home.example.org",
+        "/cookie-parser-result") == "")
+
+@test
+fn test_http_state_ordering() [io]
+    test.case("ORDERING0001")
+    test.assert(run(["key=val0;",
+        "key=val1; path=/cookie-parser-result",
+        "key=val2; path=/",
+        "key=val3; path=/bar",
+        "key=val4; domain=.example.org",
+        "key=val5; domain=.example.org; path=/cookie-parser-result/foo"],
+    "home.example.org", "/cookie-parser-result/foo/baz") == "key=val5; key=val1; key=val2; key=val4")
+
+@test
+fn test_http_state_path() [io]
+    test.case("PATH0001")
+    test.assert(run(["a=b; path=/", "x=y; path=/cookie-parser-result"],
+        "home.example.org",
+        "/cookie-parser-result") == "x=y; a=b")
+    test.case("PATH0002")
+    test.assert(run(["a=b; path=/cookie-parser-result", "x=y; path=/"],
+        "home.example.org",
+        "/cookie-parser-result") == "a=b; x=y")
+    test.case("PATH0003")
+    test.assert(run(["x=y; path=/", "a=b; path=/cookie-parser-result"],
+        "home.example.org",
+        "/cookie-parser-result") == "a=b; x=y")
+    test.case("PATH0004")
+    test.assert(run(["x=y; path=/cookie-parser-result", "a=b; path=/"],
+        "home.example.org",
+        "/cookie-parser-result") == "x=y; a=b")
+    test.case("PATH0005")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("PATH0006")
+    test.assert(run(["foo=bar", "foo=qux; path=/cookie-parser-result/foo"],
+        "home.example.org",
+        "/cookie-parser-result") == "foo=bar")
+    test.case("PATH0007")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo"], "home.example.org", "/cookie-parser-result/foo") == "foo=bar")
+    test.case("PATH0008")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo"], "home.example.org", "/cookie-parser-result/bar") == "")
+    test.case("PATH0009")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/qux"],
+        "home.example.org",
+        "/cookie-parser-result/foo") == "")
+    test.case("PATH0010")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/qux"],
+        "home.example.org",
+        "/cookie-parser-result/foo/qux") == "foo=bar")
+    test.case("PATH0011")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/qux"],
+        "home.example.org",
+        "/cookie-parser-result/bar/qux") == "")
+    test.case("PATH0012")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/qux"],
+        "home.example.org",
+        "/cookie-parser-result/foo/baz") == "")
+    test.case("PATH0013")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/qux/"],
+        "home.example.org",
+        "/cookie-parser-result/foo/baz") == "")
+    test.case("PATH0014")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/qux/"],
+        "home.example.org",
+        "/cookie-parser-result/foo/qux") == "")
+    test.case("PATH0015")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/qux/"],
+        "home.example.org",
+        "/cookie-parser-result/foo/qux/") == "foo=bar")
+    test.case("PATH0016")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/"],
+        "home.example.org",
+        "/cookie-parser-result/foo/qux") == "foo=bar")
+    test.case("PATH0017")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/"],
+        "home.example.org",
+        "/cookie-parser-result/foo//qux") == "foo=bar")
+    test.case("PATH0018")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/"],
+        "home.example.org",
+        "/cookie-parser-result/fooqux") == "")
+    test.case("PATH0019")
+    test.assert(run(["foo=bar; path"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("PATH0020")
+    test.assert(run(["foo=bar; path="], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("PATH0021")
+    test.assert(run(["foo=bar; path=/"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("PATH0022")
+    test.assert(run(["foo=bar; path= /"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("PATH0023")
+    test.assert(run(["foo=bar; Path=/cookie-PARSER-result"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("PATH0024")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/qux?"],
+        "home.example.org",
+        "/cookie-parser-result/foo/qux") == "")
+    test.case("PATH0025")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/qux#"],
+        "home.example.org",
+        "/cookie-parser-result/foo/qux") == "")
+    test.case("PATH0026")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/foo/qux;"],
+        "home.example.org",
+        "/cookie-parser-result/foo/qux") == "foo=bar")
+    test.case("PATH0027")
+    test.assert(run(["foo=bar; path=\"/cookie-parser-result/foo/qux;\""],
+        "home.example.org",
+        "/cookie-parser-result/foo/qux") == "foo=bar")
+    test.case("PATH0028")
+    test.assert(run(["foo=bar; path=/cookie-parser-result/f%6Fo/bar"],
+        "home.example.org",
+        "/cookie-parser-result/foo/bar") == "")
+    test.case("PATH0029")
+    test.assert(run(["a=b; \tpath\t=\t/cookie-parser-result\t", "x=y; \tpath\t=\t/book\t"],
+        "home.example.org",
+        "/cookie-parser-result") == "a=b")
+    test.case("PATH0030")
+    test.assert(run(["foo=bar; path=/dog; path="], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("PATH0031")
+    test.assert(run(["foo=bar; path=; path=/dog"], "home.example.org", "/cookie-parser-result") == "")
+    test.case("PATH0032")
+    test.assert(run(["foo=bar; path=/cookie-parser-result", "foo=qux; path=/cookie-parser-result/"],
+        "home.example.org",
+        "/cookie-parser-result/dog") == "foo=qux; foo=bar")
+
+@test
+fn test_http_state_value() [io]
+    test.case("VALUE0001")
+    test.assert(run(["foo=  bar"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+    test.case("VALUE0002")
+    test.assert(run(["foo=\"bar\""], "home.example.org", "/cookie-parser-result") == "foo=\"bar\"")
+    test.case("VALUE0003")
+    test.assert(run(["foo=\"  bar \""], "home.example.org", "/cookie-parser-result") == "foo=\"  bar \"")
+    test.case("VALUE0004")
+    test.assert(run(["foo=\"bar;baz\""], "home.example.org", "/cookie-parser-result") == "foo=\"bar")
+    test.case("VALUE0005")
+    test.assert(run(["foo=\"bar=baz\""], "home.example.org", "/cookie-parser-result") == "foo=\"bar=baz\"")
+    test.case("VALUE0006")
+    test.assert(run(["\tfoo\t=\tbar\t \t;\tttt"], "home.example.org", "/cookie-parser-result") == "foo=bar")
+
+@test
+fn test_http_state_dates() [io]
+    test.case("Mon, 10-Dec-2007 17:02:24 GMT")
+    match cookieparse.parse_expires("Mon, 10-Dec-2007 17:02:24 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Mon, 10 Dec 2007 17:02:24 GMT")
+        Err(_) => test.assert(false)
+    test.case("Wed, 09 Dec 2009 16:27:23 GMT")
+    match cookieparse.parse_expires("Wed, 09 Dec 2009 16:27:23 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Wed, 09 Dec 2009 16:27:23 GMT")
+        Err(_) => test.assert(false)
+    test.case("Thursday, 01-Jan-1970 00:00:00 GMT")
+    match cookieparse.parse_expires("Thursday, 01-Jan-1970 00:00:00 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Thu, 01 Jan 1970 00:00:00 GMT")
+        Err(_) => test.assert(false)
+    test.case("Mon Dec 10 16:32:30 2007 GMT")
+    match cookieparse.parse_expires("Mon Dec 10 16:32:30 2007 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Mon, 10 Dec 2007 16:32:30 GMT")
+        Err(_) => test.assert(false)
+    test.case("Wednesday, 01-Jan-10 00:00:00 GMT")
+    match cookieparse.parse_expires("Wednesday, 01-Jan-10 00:00:00 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Fri, 01 Jan 2010 00:00:00 GMT")
+        Err(_) => test.assert(false)
+    test.case("Mon, 10-Dec-07 20:35:03 GMT")
+    match cookieparse.parse_expires("Mon, 10-Dec-07 20:35:03 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Mon, 10 Dec 2007 20:35:03 GMT")
+        Err(_) => test.assert(false)
+    test.case("Wed, 1 Jan 2020 00:00:00 GMT")
+    match cookieparse.parse_expires("Wed, 1 Jan 2020 00:00:00 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Wed, 01 Jan 2020 00:00:00 GMT")
+        Err(_) => test.assert(false)
+    test.case("Saturday, 8-Dec-2012 21:24:09 GMT")
+    match cookieparse.parse_expires("Saturday, 8-Dec-2012 21:24:09 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Sat, 08 Dec 2012 21:24:09 GMT")
+        Err(_) => test.assert(false)
+    test.case("Thu, 31 Dec 23:55:55 2037 GMT")
+    match cookieparse.parse_expires("Thu, 31 Dec 23:55:55 2037 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Thu, 31 Dec 2037 23:55:55 GMT")
+        Err(_) => test.assert(false)
+    test.case("Sun,  9 Dec 2012 13:42:05 GMT")
+    match cookieparse.parse_expires("Sun,  9 Dec 2012 13:42:05 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Sun, 09 Dec 2012 13:42:05 GMT")
+        Err(_) => test.assert(false)
+    test.case("Wed Dec 12 2007 08:44:07 GMT-0500 (EST)")
+    match cookieparse.parse_expires("Wed Dec 12 2007 08:44:07 GMT-0500 (EST)")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Wed, 12 Dec 2007 08:44:07 GMT")
+        Err(_) => test.assert(false)
+    test.case("Mon, 01-Jan-2011 00: 00:00 GMT")
+    match cookieparse.parse_expires("Mon, 01-Jan-2011 00: 00:00 GMT")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+    test.case("Sun, 1-Jan-1995 00:00:00 GMT")
+    match cookieparse.parse_expires("Sun, 1-Jan-1995 00:00:00 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Sun, 01 Jan 1995 00:00:00 GMT")
+        Err(_) => test.assert(false)
+    test.case("Wednesday, 01-Jan-10 0:0:00 GMT")
+    match cookieparse.parse_expires("Wednesday, 01-Jan-10 0:0:00 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Fri, 01 Jan 2010 00:00:00 GMT")
+        Err(_) => test.assert(false)
+    test.case("Thu, 10 Dec 2009 13:57:2 GMT")
+    match cookieparse.parse_expires("Thu, 10 Dec 2009 13:57:2 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Thu, 10 Dec 2009 13:57:02 GMT")
+        Err(_) => test.assert(false)

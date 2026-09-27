@@ -1,0 +1,156 @@
+// cookiewrite_tests.nv — `Set-Cookie` and `Cookie` headers written.
+//
+// The first case is RFC 6265bis section 3.1's first example header.
+
+use std.test
+use civil
+use cookieattr
+use cookieparse
+use cookiewrite
+
+fn bare() -> cookieattr.CookieAttrs
+    cookieattr.empty_attrs()
+
+fn every_attribute() -> cookieattr.CookieAttrs
+    let at = civil.datetime(civil.date(2021, 6, 9)!, civil.time_of(10, 18, 14, 0)!)
+    CookieAttrs { domain: "example.com", path_value: "/app", life: CookieLifeExpires(at),
+                  secure: true, http_only: true, same_site: CookieSameSiteNone,
+                  partitioned: true }
+
+@test
+fn test_a_set_cookie_is_written_in_the_rfcs_order() [io]
+    test.case("RFC 6265bis section 3.1: SID=31d4d96e407aad42")
+    match cookiewrite.set_cookie("SID", "31d4d96e407aad42", bare())
+        Ok(h)  => test.assert(h == "SID=31d4d96e407aad42")
+        Err(_) => test.assert(false)
+
+    test.case("the defaults")
+    match cookiewrite.set_cookie("sid", "abc", cookieattr.defaults())
+        Ok(h)  => test.assert(h == "sid=abc; Path=/; Secure; HttpOnly; SameSite=Lax")
+        Err(_) => test.assert(false)
+
+    test.case("every attribute, Expires in the one form a server writes")
+    match cookiewrite.set_cookie("lang", "en-US", every_attribute())
+        Ok(h)  => test.assert(h == "lang=en-US; Domain=example.com; Path=/app; Expires=Wed, 09 Jun 2021 10:18:14 GMT; Secure; HttpOnly; SameSite=None; Partitioned")
+        Err(_) => test.assert(false)
+
+    test.case("what is written parses back to the same cookie")
+    match cookiewrite.set_cookie("lang", "en-US", every_attribute())
+        Ok(h)  =>
+            match cookieparse.parse_set_cookie(h)
+                Ok(spec) =>
+                    test.assert(spec.name == "lang")
+                    test.assert(spec.attrs.domain == "example.com")
+                    test.assert(spec.attrs.partitioned)
+                    test.assert(cookiewrite.set_cookie_unchecked(spec.name, spec.value, spec.attrs) == h)
+                Err(_)   => test.assert(false)
+        Err(_) => test.assert(false)
+
+@test
+fn test_a_writer_refuses_what_a_browser_drops() [io]
+    let bad = CookieAttrs { domain: "example.com", path_value: "/", life: CookieLifeSession,
+                            secure: true, http_only: true, same_site: CookieSameSiteLax,
+                            partitioned: false }
+
+    test.case("a __Host- cookie with a Domain is refused")
+    match cookiewrite.set_cookie("__Host-sid", "x", bad)
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                CookieHostPrefixWithDomain(_, _) => test.assert(true)
+                _                                => test.assert(false)
+
+    test.case("the unchecked writer writes it")
+    test.assert(cookiewrite.set_cookie_unchecked("__Host-sid", "x", bad) == "__Host-sid=x; Domain=example.com; Path=/; Secure; HttpOnly; SameSite=Lax")
+
+    test.case("a value outside the grammar is refused")
+    match cookiewrite.set_cookie("sid", "a;b", cookieattr.defaults())
+        Ok(_)  => test.assert(false)
+        Err(e) =>
+            match e
+                CookieBadValueByte(at, b) =>
+                    test.assert(at == 1)
+                    test.assert(b == ';')
+                _                         => test.assert(false)
+
+@test
+fn test_a_header_can_be_sized_and_written_into_a_buffer() [io]
+    test.case("the length is known before the write")
+    test.assert(cookiewrite.set_cookie_len("sid", "abc", cookieattr.defaults()) == 47)
+
+    test.case("the buffer form appends into a cursor the caller owns")
+    var dst = bytes.cursor_be(bytes.zeros(128))
+    dst.put_u8('>')
+    match cookiewrite.set_cookie_into("sid", "abc", cookieattr.defaults(), dst)
+        Ok(n)  =>
+            test.assert(n == 47)
+            test.assert(dst.pos() == 48)
+        Err(_) => test.assert(false)
+    let out = dst.finish()
+    test.assert(bytes.to_str(bytes.slice(out, 0, 48)) == ">sid=abc; Path=/; Secure; HttpOnly; SameSite=Lax")
+
+    test.case("a refused cookie writes nothing")
+    var none = bytes.cursor_be(bytes.zeros(16))
+    match cookiewrite.set_cookie_into("", "abc", cookieattr.defaults(), none)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(none.pos() == 0)
+
+@test
+fn test_deleting_a_cookie_keeps_its_domain_and_path() [io]
+    test.case("an empty value and Max-Age=0, with the attributes it was set with")
+    match cookiewrite.delete_cookie("sid", cookieattr.defaults())
+        Ok(h)  => test.assert(h == "sid=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax")
+        Err(_) => test.assert(false)
+    match cookiewrite.delete_cookie("lang", every_attribute())
+        Ok(h)  => test.assert(h == "lang=; Domain=example.com; Path=/app; Max-Age=0; Secure; HttpOnly; SameSite=None; Partitioned")
+        Err(_) => test.assert(false)
+
+    test.case("the same combinations are refused")
+    let bad = CookieAttrs { domain: "example.com", path_value: "/", life: CookieLifeSession,
+                            secure: true, http_only: true, same_site: CookieSameSiteLax,
+                            partitioned: false }
+    match cookiewrite.delete_cookie("__Host-sid", bad)
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_the_request_header_and_the_value_check() [io]
+    test.case("a value that is in the grammar is answered as written")
+    test.assert(cookiewrite.quote_value("abc") == Ok("abc"))
+    test.assert(cookiewrite.quote_value("\"abc\"") == Ok("\"abc\""))
+
+    test.case("quoting makes no byte legal, so a value outside the grammar is refused")
+    match cookiewrite.quote_value("a b")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+    match cookiewrite.quote_value("a\nb")
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+    test.case("the client direction writes pairs and no attributes")
+    match cookiewrite.cookie_header([("sid", "abc"), ("theme", "dark")])
+        Ok(h)  => test.assert(h == "sid=abc; theme=dark")
+        Err(_) => test.assert(false)
+    match cookiewrite.cookie_header([])
+        Ok(h)  => test.assert(h == "")
+        Err(_) => test.assert(false)
+
+    test.case("and refuses a pair the grammar does not allow")
+    match cookiewrite.cookie_header([("sid", "a;b")])
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+    match cookiewrite.cookie_header([("s d", "ab")])
+        Ok(_)  => test.assert(false)
+        Err(_) => test.assert(true)
+
+@test
+fn test_an_expires_is_written_in_one_form() [io]
+    test.case("RFC 9110 section 5.6.7's example")
+    match cookieparse.parse_expires("Sun, 06 Nov 1994 08:49:37 GMT")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Sun, 06 Nov 1994 08:49:37 GMT")
+        Err(_) => test.assert(false)
+
+    test.case("a four-digit year and two-digit fields, whatever the input spelled")
+    match cookieparse.parse_expires("Mon Jan 1 1:2:3 2001")
+        Ok(dt) => test.assert(cookiewrite.format_expires(dt) == "Mon, 01 Jan 2001 01:02:03 GMT")
+        Err(_) => test.assert(false)

@@ -1,66 +1,51 @@
-// cookieattr_tests.nv — the attribute rules, and the headers a browser
-// silently drops.
+// cookieattr_tests.nv — the attribute rules, including the five
+// combinations a browser drops without reporting anything.
 //
-// RED ON PURPOSE: every body under `src/` is a `todo()`, so every
-// assertion here reaches `not implemented: cookie-nv.<module>.<fn>`.
-//
-// THE CASES ARE THE ONES A BROWSER IGNORES WITHOUT SAYING SO.  Every
-// combination below is accepted by every cookie library that has a
-// `to_string` which cannot fail, is emitted onto the wire, and is then
-// dropped by the browser with no error anywhere — so the server sees a
-// request with no session and concludes the user logged out.  A suite
-// made of well-formed cookies would prove nothing about the one thing
-// this package is for.
+// The prefix cases are RFC 6265bis section 4.1.3's own examples.
 
 use std.test
 use std.list
 use cookieattr
-use cookieparse
-use cookiewrite
 
 fn host_attrs() -> cookieattr.CookieAttrs
-    CookieAttrs { domain: "", path_value: "/",
-                             life: CookieLifeSession, secure: true,
-                             http_only: true, same_site: CookieSameSiteLax,
-                             partitioned: false }
+    CookieAttrs { domain: "", path_value: "/", life: CookieLifeSession,
+                  secure: true, http_only: true, same_site: CookieSameSiteLax,
+                  partitioned: false }
+
+fn attrs(domain: Str, path_value: Str, secure: Bool) -> cookieattr.CookieAttrs
+    CookieAttrs { domain: domain, path_value: path_value, life: CookieLifeSession,
+                  secure: secure, http_only: false, same_site: CookieSameSiteAbsent,
+                  partitioned: false }
 
 @test
-fn test_the_defaults_are_the_combination_almost_nobody_writes() [io]
+fn test_the_defaults_and_the_empty_set() [io]
     let a = cookieattr.defaults()
 
-    test.case("Path=/ — the browser's own default scopes a cookie to a directory")
+    test.case("the defaults are Path=/, Secure, HttpOnly, SameSite=Lax, no Domain, a session")
     test.assert(a.path_value == "/")
-
-    test.case("no Domain, which is what host-only means")
     test.assert(a.domain == "")
-
-    test.case("Secure and HttpOnly")
     test.assert(a.secure)
     test.assert(a.http_only)
-
-    test.case("SameSite=Lax, which is what a session cookie wants")
-    match a.same_site
-        CookieSameSiteLax => test.assert(true)
-        _                 => test.assert(false)
-
-    test.case("and a session lifetime")
+    test.assert(cookieattr.same_site_name(a.same_site) == "Lax")
     match a.life
         CookieLifeSession => test.assert(true)
         _                 => test.assert(false)
 
-    test.case("the empty set is a different thing, and the two names say which was meant")
+    test.case("the empty set has no Path and every flag off")
     let e = cookieattr.empty_attrs()
     test.assert(e.path_value == "")
     test.assert(e.secure == false)
+    test.assert(e.http_only == false)
+    test.assert(cookieattr.same_site_name(e.same_site) == "")
 
 @test
-fn test_the_prefix_is_read_off_the_name_and_the_comparison_is_case_sensitive() [io]
+fn test_the_prefix_is_read_off_the_name_case_sensitively() [io]
     test.case("__Host- is the host-locked prefix")
     match cookieattr.prefix_of("__Host-sid")
         CookiePrefixHost => test.assert(true)
         _                => test.assert(false)
 
-    test.case("__Secure- requires Secure and nothing more")
+    test.case("__Secure- requires Secure")
     match cookieattr.prefix_of("__Secure-sid")
         CookiePrefixSecure => test.assert(true)
         _                  => test.assert(false)
@@ -70,197 +55,200 @@ fn test_the_prefix_is_read_off_the_name_and_the_comparison_is_case_sensitive() [
         CookiePrefixNone => test.assert(true)
         _                => test.assert(false)
 
-    test.case("and __host- is an ordinary name, because browsers compare case-sensitively")
+    test.case("__host- is an ordinary name")
     match cookieattr.prefix_of("__host-sid")
         CookiePrefixNone => test.assert(true)
         _                => test.assert(false)
 
 @test
-fn test_every_silently_dropped_combination_is_refused_here() [io]
-    test.case("__Host- with a Domain — the prefix means host-locked and Domain means the opposite")
-    var a = host_attrs()
-    a = CookieAttrs { domain: "example.com", path_value: a.path_value,
-                                 life: a.life, secure: a.secure,
-                                 http_only: a.http_only, same_site: a.same_site,
-                                 partitioned: a.partitioned }
-    test.assert(cookieattr.attrs_ok("__Host-sid", a) == false)
-    match list.first(cookieattr.check_attrs("__Host-sid", a))
+fn test_rfc_6265bis_section_4_1_3_prefix_examples() [io]
+    test.case("__Secure-SID=12345; Domain=site.example is rejected: no Secure")
+    test.assert(cookieattr.attrs_ok("__Secure-SID", attrs("site.example", "", false)) == false)
+
+    test.case("__Secure-SID=12345; Secure; Domain=site.example is accepted")
+    test.assert(cookieattr.attrs_ok("__Secure-SID", attrs("site.example", "", true)))
+
+    test.case("__Host-SID=12345 is rejected")
+    test.assert(cookieattr.attrs_ok("__Host-SID", attrs("", "", false)) == false)
+
+    test.case("__Host-SID=12345; Secure is rejected: no Path=/")
+    test.assert(cookieattr.attrs_ok("__Host-SID", attrs("", "", true)) == false)
+
+    test.case("__Host-SID=12345; Domain=site.example is rejected")
+    test.assert(cookieattr.attrs_ok("__Host-SID", attrs("site.example", "", false)) == false)
+
+    test.case("__Host-SID=12345; Domain=site.example; Path=/ is rejected")
+    test.assert(cookieattr.attrs_ok("__Host-SID", attrs("site.example", "/", false)) == false)
+
+    test.case("__Host-SID=12345; Secure; Domain=site.example; Path=/ is rejected")
+    test.assert(cookieattr.attrs_ok("__Host-SID", attrs("site.example", "/", true)) == false)
+
+    test.case("__Host-SID=12345; Secure; Path=/ is accepted")
+    test.assert(cookieattr.attrs_ok("__Host-SID", attrs("", "/", true)))
+
+@test
+fn test_every_silently_dropped_combination_is_refused() [io]
+    test.case("__Host- with a Domain")
+    let d = CookieAttrs { domain: "example.com", path_value: "/", life: CookieLifeSession,
+                          secure: true, http_only: true, same_site: CookieSameSiteLax,
+                          partitioned: false }
+    match list.first(cookieattr.check_attrs("__Host-sid", d))
         Some(e) =>
             match e
-                CookieHostPrefixWithDomain(n, d) =>
+                CookieHostPrefixWithDomain(n, dom) =>
                     test.assert(n == "__Host-sid")
-                    test.assert(d == "example.com")
-                _                                => test.assert(false)
+                    test.assert(dom == "example.com")
+                _                                  => test.assert(false)
         None    => test.assert(false)
 
     test.case("__Host- with a Path that is not exactly /")
-    var p = host_attrs()
-    p = CookieAttrs { domain: "", path_value: "/admin", life: p.life,
-                                 secure: p.secure, http_only: p.http_only,
-                                 same_site: p.same_site, partitioned: p.partitioned }
-    test.assert(cookieattr.attrs_ok("__Host-sid", p) == false)
+    test.assert(cookieattr.attrs_ok("__Host-sid", attrs("", "/admin", true)) == false)
 
     test.case("__Secure- without Secure")
-    var s = host_attrs()
-    s = CookieAttrs { domain: s.domain, path_value: s.path_value,
-                                 life: s.life, secure: false,
-                                 http_only: s.http_only, same_site: s.same_site,
-                                 partitioned: s.partitioned }
-    test.assert(cookieattr.attrs_ok("__Secure-sid", s) == false)
+    test.assert(cookieattr.attrs_ok("__Secure-sid", attrs("", "/", false)) == false)
 
-    test.case("SameSite=None without Secure — the `works locally, not in production` bug")
-    var n = cookieattr.empty_attrs()
-    n = CookieAttrs { domain: "", path_value: "/", life: CookieLifeSession,
-                                 secure: false, http_only: true,
-                                 same_site: CookieSameSiteNone, partitioned: false }
-    test.assert(cookieattr.attrs_ok("sid", n) == false)
+    test.case("SameSite=None without Secure")
+    let n = CookieAttrs { domain: "", path_value: "/", life: CookieLifeSession,
+                          secure: false, http_only: true, same_site: CookieSameSiteNone,
+                          partitioned: false }
+    match list.first(cookieattr.check_attrs("sid", n))
+        Some(e) =>
+            match e
+                CookieSameSiteNoneNeedsSecure(name) => test.assert(name == "sid")
+                _                                   => test.assert(false)
+        None    => test.assert(false)
 
     test.case("Partitioned without Secure")
-    var pt = CookieAttrs { domain: "", path_value: "/",
-                                      life: CookieLifeSession, secure: false,
-                                      http_only: true, same_site: CookieSameSiteLax,
-                                      partitioned: true }
+    let pt = CookieAttrs { domain: "", path_value: "/", life: CookieLifeSession,
+                           secure: false, http_only: true, same_site: CookieSameSiteLax,
+                           partitioned: true }
     test.assert(cookieattr.attrs_ok("sid", pt) == false)
 
-    test.case("and a correct __Host- cookie passes, so the check is not refusing everything")
+    test.case("the same attributes with Secure pass")
     test.assert(cookieattr.attrs_ok("__Host-sid", host_attrs()))
+    test.assert(list.len(cookieattr.browser_rules("sid", cookieattr.apply_prefix("sid", n))) == 0)
+    test.assert(list.len(cookieattr.browser_rules("sid", cookieattr.apply_prefix("sid", pt))) == 0)
 
 @test
-fn test_the_check_answers_every_problem_rather_than_the_first() [io]
-    // A caller building a cookie wrongly has usually got two attributes
-    // wrong, and fixing one at a time is two deploys.
+fn test_the_check_answers_every_problem() [io]
     test.case("a __Host- cookie with a Domain, a bad Path and no Secure reports three")
-    let bad = CookieAttrs { domain: "example.com", path_value: "/admin",
-                                       life: CookieLifeSession, secure: false,
-                                       http_only: true, same_site: CookieSameSiteLax,
-                                       partitioned: false }
-    test.assert(list.len(cookieattr.check_attrs("__Host-sid", bad)) == 3)
+    test.assert(list.len(cookieattr.check_attrs("__Host-sid", attrs("example.com", "/admin", false))) == 3)
+
+    test.case("the grammar comes first: the name, the Domain, the Path")
+    let es = cookieattr.check_attrs("a b", attrs("exa mple.com", "admin", true))
+    test.assert(list.len(es) == 3)
+    match es[0]
+        CookieBadNameByte(at, b) =>
+            test.assert(at == 1)
+            test.assert(b == ' ')
+        _                        => test.assert(false)
+    match es[1]
+        CookieBadDomain(dom) => test.assert(dom == "exa mple.com")
+        _                    => test.assert(false)
+    match es[2]
+        CookieBadPath(p) => test.assert(p == "admin")
+        _                => test.assert(false)
+
+    test.case("an empty name is not a cookie")
+    match list.first(cookieattr.check_attrs("", cookieattr.defaults()))
+        Some(e) =>
+            match e
+                CookieMalformed(at) => test.assert(at == 0)
+                _                   => test.assert(false)
+        None    => test.assert(false)
+
+    test.case("a Domain is labels of letters, digits, `-` and `_`, with one optional leading dot")
+    test.assert(cookieattr.attrs_ok("sid", attrs(".example.com", "/", true)))
+    test.assert(cookieattr.attrs_ok("sid", attrs("a_b-c.Example.com", "/", true)))
+    test.assert(cookieattr.attrs_ok("sid", attrs(".", "/", true)) == false)
+    test.assert(cookieattr.attrs_ok("sid", attrs("a..b", "/", true)) == false)
+
+    test.case("a Path holds no control byte and no semicolon")
+    test.assert(cookieattr.attrs_ok("sid", attrs("", "/a;b", true)) == false)
+    test.assert(cookieattr.attrs_ok("sid", attrs("", "/a\tb", true)) == false)
+    test.assert(cookieattr.attrs_ok("sid", attrs("", "/a b", true)))
 
 @test
 fn test_the_repair_is_published_beside_the_check() [io]
-    // A caller that wants a __Host- cookie and does not want to
-    // remember three rules should not have to turn the check off.
     test.case("apply_prefix makes a __Host- attribute set pass")
-    let bad = CookieAttrs { domain: "example.com", path_value: "/admin",
-                                       life: CookieLifeSession, secure: false,
-                                       http_only: true, same_site: CookieSameSiteLax,
-                                       partitioned: false }
-    let fixed = cookieattr.apply_prefix("__Host-sid", bad)
+    let fixed = cookieattr.apply_prefix("__Host-sid", attrs("example.com", "/admin", false))
     test.assert(fixed.domain == "")
     test.assert(fixed.path_value == "/")
     test.assert(fixed.secure)
     test.assert(cookieattr.attrs_ok("__Host-sid", fixed))
 
-@test
-fn test_the_name_and_value_grammars_are_different_and_the_difference_matters() [io]
-    test.case("a name is an RFC 9110 token: no separators")
-    test.assert(cookieattr.name_byte_ok(0x61))
-    test.assert(cookieattr.name_byte_ok(0x3D) == false)
-    test.assert(cookieattr.name_byte_ok(0x3B) == false)
-    test.assert(cookieattr.name_byte_ok(0x20) == false)
+    test.case("a __Secure- name gains Secure and keeps its Domain and Path")
+    let s = cookieattr.apply_prefix("__Secure-sid", attrs("example.com", "/admin", false))
+    test.assert(s.secure)
+    test.assert(s.domain == "example.com")
+    test.assert(s.path_value == "/admin")
 
-    test.case("a value may hold `/`, `:` and `=`, which is why a JWT goes in one unencoded")
-    test.assert(cookieattr.value_byte_ok(0x2F))
-    test.assert(cookieattr.value_byte_ok(0x3A))
-    test.assert(cookieattr.value_byte_ok(0x3D))
-
-    test.case("and may not hold a semicolon, a comma, a space or a control byte")
-    test.assert(cookieattr.value_byte_ok(0x3B) == false)
-    test.assert(cookieattr.value_byte_ok(0x2C) == false)
-    test.assert(cookieattr.value_byte_ok(0x20) == false)
-    test.assert(cookieattr.value_byte_ok(0x0A) == false)
+    test.case("an ordinary name is left as it was")
+    let o = cookieattr.apply_prefix("sid", attrs("example.com", "/admin", false))
+    test.assert(o.secure == false)
+    test.assert(o.domain == "example.com")
 
 @test
-fn test_samesite_absent_is_not_samesite_lax() [io]
-    // Absent means the browser's own default applies, which is Lax now
-    // and was None before — so a cookie that must be cross-site says
-    // None rather than saying nothing.
+fn test_the_name_and_value_grammars_differ() [io]
+    test.case("a name is an RFC 9110 token")
+    test.assert(cookieattr.name_byte_ok('a'))
+    test.assert(cookieattr.name_byte_ok('!'))
+    test.assert(cookieattr.name_byte_ok('=') == false)
+    test.assert(cookieattr.name_byte_ok(';') == false)
+    test.assert(cookieattr.name_byte_ok(' ') == false)
+    test.assert(cookieattr.name_byte_ok('/') == false)
+    test.assert(cookieattr.name_byte_ok(127) == false)
+
+    test.case("a value may hold `/`, `:` and `=`")
+    test.assert(cookieattr.value_byte_ok('/'))
+    test.assert(cookieattr.value_byte_ok(':'))
+    test.assert(cookieattr.value_byte_ok('='))
+
+    test.case("and may not hold `;`, `,`, a double quote, a backslash, a space or a control byte")
+    test.assert(cookieattr.value_byte_ok(';') == false)
+    test.assert(cookieattr.value_byte_ok(',') == false)
+    test.assert(cookieattr.value_byte_ok('"') == false)
+    test.assert(cookieattr.value_byte_ok('\\') == false)
+    test.assert(cookieattr.value_byte_ok(' ') == false)
+    test.assert(cookieattr.value_byte_ok('\n') == false)
+    test.assert(cookieattr.value_byte_ok(200) == false)
+
+@test
+fn test_samesite_is_spelled_as_a_header_spells_it() [io]
     test.case("the names are the header's spellings")
+    test.assert(cookieattr.same_site_name(CookieSameSiteStrict) == "Strict")
     test.assert(cookieattr.same_site_name(CookieSameSiteLax) == "Lax")
     test.assert(cookieattr.same_site_name(CookieSameSiteNone) == "None")
     test.assert(cookieattr.same_site_name(CookieSameSiteAbsent) == "")
 
-    test.case("parsing follows the header's own case-insensitivity")
-    match cookieattr.same_site_named("strict")
-        CookieSameSiteStrict => test.assert(true)
-        _                    => test.assert(false)
+    test.case("reading ignores case")
+    test.assert(cookieattr.same_site_name(cookieattr.same_site_named("strict")) == "Strict")
+    test.assert(cookieattr.same_site_name(cookieattr.same_site_named("LAX")) == "Lax")
+    test.assert(cookieattr.same_site_name(cookieattr.same_site_named("nOnE")) == "None")
 
-    test.case("and an unknown value is absent rather than refused, which is what a browser does")
-    match cookieattr.same_site_named("Sometimes")
-        CookieSameSiteAbsent => test.assert(true)
-        _                    => test.assert(false)
+    test.case("an unknown value is absent, as RFC 6265bis section 5.6.7 has a browser read it")
+    test.assert(cookieattr.same_site_name(cookieattr.same_site_named("Sometimes")) == "")
 
 @test
-fn test_a_writer_that_cannot_fail_is_a_writer_that_emits_dropped_cookies() [io]
-    test.case("the checked writer refuses a __Host- cookie with a Domain")
-    let bad = CookieAttrs { domain: "example.com", path_value: "/",
-                                       life: CookieLifeSession, secure: true,
-                                       http_only: true, same_site: CookieSameSiteLax,
-                                       partitioned: false }
-    match cookiewrite.set_cookie("__Host-sid", "x", bad)
-        Ok(_)  => test.assert(false)
-        Err(_) => test.assert(true)
-
-    test.case("and the unchecked one writes it, because a proxy and a test both need that")
-    test.assert(cookiewrite.set_cookie_unchecked("__Host-sid", "x", bad) != "")
-
-    test.case("a correct cookie comes out in the order the RFC writes the attributes")
-    match cookiewrite.set_cookie("sid", "abc", cookieattr.defaults())
-        Ok(h)  => test.assert(h == "sid=abc; Path=/; Secure; HttpOnly; SameSite=Lax")
-        Err(_) => test.assert(false)
-
-    test.case("the length is answerable before the write, so a buffer can be sized")
-    test.assert(cookiewrite.set_cookie_len("sid", "abc", cookieattr.defaults()) == 49)
-
-    test.case("and the buffer form appends into a cursor the caller owns")
-    var dst = bytes.cursor_be(bytes.zeros(128))
-    match cookiewrite.set_cookie_into("sid", "abc", cookieattr.defaults(), dst)
-        Ok(n)  => test.assert(n == 49)
-        Err(_) => test.assert(false)
-
-@test
-fn test_deleting_a_cookie_means_matching_the_one_that_was_set() [io]
-    // A cookie set with Domain and Path=/app is not deleted by a header
-    // with neither: the browser keys on the triple, so the deletion
-    // lands on a different cookie.
-    test.case("delete_cookie keeps the attributes it was handed and adds the expiry")
-    match cookiewrite.delete_cookie("sid", cookieattr.defaults())
-        Ok(h)  => test.assert(h == "sid=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax")
-        Err(_) => test.assert(false)
-
-    test.case("and it refuses the same combinations set_cookie does")
-    let bad = CookieAttrs { domain: "example.com", path_value: "/",
-                                       life: CookieLifeSession, secure: true,
-                                       http_only: true, same_site: CookieSameSiteLax,
-                                       partitioned: false }
-    match cookiewrite.delete_cookie("__Host-sid", bad)
-        Ok(_)  => test.assert(false)
-        Err(_) => test.assert(true)
-
-@test
-fn test_quoting_is_only_applied_where_it_makes_a_value_legal() [io]
-    test.case("a value that needs no quotes keeps none")
-    match cookiewrite.quote_value("abc")
-        Ok(v)  => test.assert(v == "abc")
-        Err(_) => test.assert(false)
-
-    test.case("a control byte cannot be quoted into legality, so it is refused")
-    match cookiewrite.quote_value("a\nb")
-        Ok(_)  => test.assert(false)
-        Err(_) => test.assert(true)
-
-    test.case("the client direction writes pairs and no attributes")
-    match cookiewrite.cookie_header([("sid", "abc"), ("theme", "dark")])
-        Ok(h)  => test.assert(h == "sid=abc; theme=dark")
-        Err(_) => test.assert(false)
-
-    test.case("and refuses a pair the grammar does not allow")
-    match cookiewrite.cookie_header([("sid", "a;b")])
-        Ok(_)  => test.assert(false)
-        Err(_) => test.assert(true)
-
-    test.case("an Expires is written in the one spelling the RFC requires of a server")
-    match cookieparse.parse_expires("Sun, 06 Nov 1994 08:49:37 GMT")
-        Ok(dt) => test.assert(cookiewrite.format_expires(dt)
-                              == "Sun, 06 Nov 1994 08:49:37 GMT")
-        Err(_) => test.assert(false)
+fn test_every_error_has_a_one_line_message() [io]
+    let es = [CookieHostPrefixWithDomain("__Host-a", "x.com"),
+              CookieHostPrefixBadPath("__Host-a", "/p"),
+              CookiePrefixNeedsSecure("__Secure-a"),
+              CookieSameSiteNoneNeedsSecure("a"),
+              CookiePartitionedNeedsSecure("a"),
+              CookieBadNameByte(1, 32),
+              CookieBadValueByte(2, 59),
+              CookieBadDomain("x y"),
+              CookieBadPath("p"),
+              CookieBadExpires("soon"),
+              CookieBadMaxAge("ten"),
+              CookieMalformed(0),
+              CookieSealBroken("sid")]
+    test.case("each message is one line and names what is wrong")
+    for e in es
+        let m = e.message()
+        test.assert(m != "")
+        test.assert(str.contains(m, "\n") == false)
+    test.assert(str.contains(es[0].message(), "Domain=x.com"))
+    test.assert(str.contains(es[5].message(), "cookie name"))
+    test.assert(str.contains(es[12].message(), "sid"))

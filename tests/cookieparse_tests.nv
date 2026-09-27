@@ -1,0 +1,281 @@
+// cookieparse_tests.nv — the `Cookie` header, the `Set-Cookie` header,
+// and the cookie-date rules.
+//
+// The date cases are RFC 6265bis section 5.1.1's rules applied to the
+// three spellings RFC 9110 section 5.6.7 names, plus the two-digit year
+// boundary.  The http-state corpus's date examples are in
+// httpstate_tests.nv.
+
+use std.test
+use std.list
+use cookieattr
+use cookieparse
+
+fn first_error(h: Str) -> ?cookieattr.CookieError
+    match cookieparse.parse_set_cookie(h)
+        Ok(_)  => None
+        Err(e) => Some(e)
+
+// How many attributes the lenient reading of a header ignored.
+fn ignored(h: Str) -> Int
+    let pair = cookieparse.parse_set_cookie_lenient(h)
+    list.len(pair.1)
+
+@test
+fn test_a_cookie_header_is_spans_and_never_fails() [io]
+    let header = "sid=abc; theme=dark"
+
+    test.case("the pairs are ranges into the caller's own string")
+    let h = cookieparse.parse_header(header)
+    test.assert(list.len(h.pairs) == 2)
+    test.assert(h.skipped == 0)
+    test.assert(cookieparse.span_str(header, h.pairs[0].name) == "sid")
+    test.assert(cookieparse.span_str(header, h.pairs[1].value) == "dark")
+
+    test.case("reading one of them copies one value")
+    match cookieparse.get(header, "theme")
+        Some(sp) =>
+            test.assert(sp.start == 15)
+            test.assert(cookieparse.span_str(header, sp) == "dark")
+        None     => test.assert(false)
+
+    test.case("a name the header does not carry is absent")
+    test.assert(cookieparse.get_str(header, "nosuch") == None)
+
+    test.case("a cookie with an empty value is present")
+    match cookieparse.get("sid=", "sid")
+        Some(sp) => test.assert(cookieparse.span_empty(sp))
+        None     => test.assert(false)
+    match cookieparse.get(header, "sid")
+        Some(sp) => test.assert(cookieparse.span_empty(sp) == false)
+        None     => test.assert(false)
+
+    test.case("a piece with no `=` or no name is skipped and counted")
+    let messy = cookieparse.parse_header("sid=abc; garbage; =x; theme=dark")
+    test.assert(list.len(messy.pairs) == 2)
+    test.assert(messy.skipped == 2)
+
+    test.case("an empty piece is skipped and not counted")
+    let sparse = cookieparse.parse_header(";; sid=abc;  ;")
+    test.assert(list.len(sparse.pairs) == 1)
+    test.assert(sparse.skipped == 0)
+    test.assert(cookieparse.count("") == 0)
+
+    test.case("spaces and tabs around a name and a value are not part of them")
+    test.assert(cookieparse.get_str(" \tsid \t= abc \t; x=1", "sid") == Some("abc"))
+    test.assert(cookieparse.get_str("sid=   ", "sid") == Some(""))
+
+    test.case("counting answers what parsing answers")
+    test.assert(cookieparse.count(header) == 2)
+
+    test.case("two cookies with one name answer the first")
+    test.assert(cookieparse.get_str("sid=inner; sid=outer", "sid") == Some("inner"))
+    test.assert(list.len(cookieparse.get_all("sid=inner; sid=outer", "sid")) == 2)
+
+    test.case("the quotes are the client's, and removing them is a separate call")
+    test.assert(cookieparse.get_str("q=\"abc\"", "q") == Some("\"abc\""))
+    test.assert(cookieparse.unquote("\"abc\"") == "abc")
+    test.assert(cookieparse.unquote("abc") == "abc")
+    test.assert(cookieparse.unquote("\"") == "\"")
+    test.assert(cookieparse.unquote("\"abc") == "\"abc")
+
+@test
+fn test_set_cookie_is_strict_for_a_server() [io]
+    test.case("a well-formed header parses into the pair and the attributes")
+    match cookieparse.parse_set_cookie("sid=abc; Path=/; Secure; HttpOnly; SameSite=Lax")
+        Ok(spec) =>
+            test.assert(spec.name == "sid")
+            test.assert(spec.value == "abc")
+            test.assert(spec.attrs.path_value == "/")
+            test.assert(spec.attrs.secure)
+            test.assert(spec.attrs.http_only)
+            test.assert(cookieattr.same_site_name(spec.attrs.same_site) == "Lax")
+        Err(_)   => test.assert(false)
+
+    test.case("attribute names ignore case, and Domain loses its leading dot and its case")
+    match cookieparse.parse_set_cookie("a=b; domain=.Example.COM; PARTITIONED; secure; max-age=60")
+        Ok(spec) =>
+            test.assert(spec.attrs.domain == "example.com")
+            test.assert(spec.attrs.partitioned)
+            match spec.attrs.life
+                CookieLifeMaxAge(s) => test.assert(s == 60)
+                _                   => test.assert(false)
+        Err(_)   => test.assert(false)
+
+    test.case("Max-Age wins over Expires, in either order (RFC 6265bis section 5.7 step 3)")
+    match cookieparse.parse_set_cookie("a=b; Max-Age=5; Expires=Sun, 06 Nov 1994 08:49:37 GMT")
+        Ok(spec) =>
+            match spec.attrs.life
+                CookieLifeMaxAge(s) => test.assert(s == 5)
+                _                   => test.assert(false)
+        Err(_)   => test.assert(false)
+    match cookieparse.parse_set_cookie("a=b; Expires=Sun, 06 Nov 1994 08:49:37 GMT")
+        Ok(spec) =>
+            match spec.attrs.life
+                CookieLifeExpires(t) => test.assert(t.date.year == 1994)
+                _                    => test.assert(false)
+        Err(_)   => test.assert(false)
+
+    test.case("an unknown attribute is ignored")
+    test.assert(first_error("a=b; Version=1; Comment=x") == None)
+
+    test.case("a pair with no `=` is refused")
+    match first_error("no-equals-sign")
+        Some(e) =>
+            match e
+                CookieMalformed(at) => test.assert(at == 14)
+                _                   => test.assert(false)
+        None    => test.assert(false)
+
+    test.case("a value outside the grammar is refused at its first bad byte")
+    match first_error("a=x y")
+        Some(e) =>
+            match e
+                CookieBadValueByte(at, b) =>
+                    test.assert(at == 1)
+                    test.assert(b == ' ')
+                _                         => test.assert(false)
+        None    => test.assert(false)
+
+    test.case("a quoted value is a value")
+    test.assert(first_error("a=\"xyz\"") == None)
+    test.assert(first_error("a=\"x\"y\"") != None)
+
+    test.case("a name outside the grammar is refused")
+    test.assert(first_error("a(b=1") != None)
+
+    test.case("a combination a browser drops is refused")
+    match first_error("__Host-a=1; Secure")
+        Some(e) =>
+            match e
+                CookieHostPrefixBadPath(n, _) => test.assert(n == "__Host-a")
+                _                             => test.assert(false)
+        None    => test.assert(false)
+
+    test.case("an unreadable attribute value is refused")
+    test.assert(first_error("a=b; Max-Age=soon") != None)
+    test.assert(first_error("a=b; Expires=soon") != None)
+    test.assert(first_error("a=b; Domain=") != None)
+    test.assert(first_error("a=b; Path=relative") != None)
+
+    test.case("a control byte refuses the whole header")
+    match first_error("a=b\x01; Secure")
+        Some(e) =>
+            match e
+                CookieMalformed(at) => test.assert(at == 3)
+                _                   => test.assert(false)
+        None    => test.assert(false)
+
+@test
+fn test_set_cookie_is_lenient_for_a_client() [io]
+    test.case("an attribute that cannot be read is ignored and listed")
+    let pair = cookieparse.parse_set_cookie_lenient("sid=abc; Max-Age=soon; Secure")
+    test.assert(pair.0.value == "abc")
+    test.assert(pair.0.attrs.secure)
+    test.assert(list.len(pair.1) == 1)
+
+    test.case("Max-Age is an optional minus sign and digits, and nothing else")
+    test.assert(ignored("a=b; Max-Age=-") == 1)
+    test.assert(ignored("a=b; Max-Age=") == 1)
+    test.assert(ignored("a=b; Max-Age=1e3") == 1)
+    let neg = cookieparse.parse_set_cookie_lenient("a=b; Max-Age=-5")
+    match neg.0.attrs.life
+        CookieLifeMaxAge(s) => test.assert(s == 0 - 5)
+        _                   => test.assert(false)
+
+    test.case("a Path that does not begin with `/` is the default path")
+    let p = cookieparse.parse_set_cookie_lenient("a=b; Path=x/y")
+    test.assert(p.0.attrs.path_value == "")
+    test.assert(list.len(p.1) == 1)
+
+    test.case("the last Domain and the last Path win")
+    let d = cookieparse.parse_set_cookie_lenient("a=b; Domain=one.com; Path=/a; Domain=two.com; Path=/b")
+    test.assert(d.0.attrs.domain == "two.com")
+    test.assert(d.0.attrs.path_value == "/b")
+
+    test.case("a pair with no `=` is a cookie with an empty name")
+    let n = cookieparse.parse_set_cookie_lenient("foo; Secure")
+    test.assert(n.0.name == "")
+    test.assert(n.0.value == "foo")
+    test.assert(list.len(n.1) == 0)
+
+    test.case("an empty name and an empty value ignore the cookie")
+    let e = cookieparse.parse_set_cookie_lenient("=; Secure")
+    test.assert(e.0.name == "")
+    test.assert(e.0.attrs.secure == false)
+    test.assert(list.len(e.1) == 1)
+
+    test.case("a control byte ignores the cookie")
+    test.assert(ignored("a=b\x7f") == 1)
+    test.assert(ignored("a=b\tc") == 0)
+
+@test
+fn test_the_expires_parser_reads_what_browsers_read() [io]
+    test.case("the RFC 1123 spelling, which a server writes")
+    match cookieparse.parse_expires("Sun, 06 Nov 1994 08:49:37 GMT")
+        Ok(dt) =>
+            test.assert(dt.date.year == 1994)
+            test.assert(dt.date.month == 11)
+            test.assert(dt.date.day == 6)
+            test.assert(dt.time.hour == 8)
+            test.assert(dt.time.minute == 49)
+            test.assert(dt.time.second == 37)
+        Err(_) => test.assert(false)
+
+    test.case("the RFC 850 spelling")
+    match cookieparse.parse_expires("Sunday, 06-Nov-94 08:49:37 GMT")
+        Ok(dt) => test.assert(dt.date.year == 1994)
+        Err(_) => test.assert(false)
+
+    test.case("the asctime spelling")
+    match cookieparse.parse_expires("Sun Nov  6 08:49:37 1994")
+        Ok(dt) => test.assert(dt.date.day == 6)
+        Err(_) => test.assert(false)
+
+    test.case("a two-digit year of 70 or more is 1970 to 1999, and one below is 2000 to 2069")
+    match cookieparse.parse_expires("Sun, 06-Nov-70 08:49:37 GMT")
+        Ok(dt) => test.assert(dt.date.year == 1970)
+        Err(_) => test.assert(false)
+    match cookieparse.parse_expires("Sun, 06-Nov-69 08:49:37 GMT")
+        Ok(dt) => test.assert(dt.date.year == 2069)
+        Err(_) => test.assert(false)
+
+    test.case("a time with one-digit parts, and a month named in full")
+    match cookieparse.parse_expires("6 november 2001 1:2:3")
+        Ok(dt) =>
+            test.assert(dt.date.month == 11)
+            test.assert(dt.time.hour == 1)
+            test.assert(dt.time.second == 3)
+        Err(_) => test.assert(false)
+
+    test.case("what is not a date is refused")
+    let bad = ["whenever", "Sun, 06 Nov 1600 08:49:37 GMT", "Sun, 31 Feb 2001 08:49:37 GMT",
+               "Sun, 06 Nov 2001 24:00:00 GMT", "Sun, 06 Nov 2001 08:60:00 GMT",
+               "Sun, 06 Nov 2001 08:49:60 GMT", "Sun, 06 Nov 2001", "06 2001 08:49:37",
+               "Sun, 00 Nov 2001 08:49:37 GMT", "Sun, 06 No 2001 08:49:37 GMT",
+               "Sun, 06 Nov 2001 123:49:37 GMT", "Sun, 06 Nov 2001 08:4x:37 GMT",
+               "Sun, 06 Nov 2001 08:49:x GMT", "Sun, 06 Nov 2001 08:49 GMT"]
+    for b in bad
+        match cookieparse.parse_expires(b)
+            Ok(_)  => test.assert(false)
+            Err(e) =>
+                match e
+                    CookieBadExpires(t) => test.assert(t == b)
+                    _                   => test.assert(false)
+
+@test
+fn test_the_value_grammar_is_published() [io]
+    test.case("a bare or quoted run of cookie-octet passes")
+    test.assert(cookieparse.value_error("abc") == None)
+    test.assert(cookieparse.value_error("\"abc\"") == None)
+    test.assert(cookieparse.value_error("") == None)
+
+    test.case("anything else is refused at its first bad byte")
+    match cookieparse.value_error("\"a,b\"")
+        Some(e) =>
+            match e
+                CookieBadValueByte(at, b) =>
+                    test.assert(at == 2)
+                    test.assert(b == ',')
+                _                         => test.assert(false)
+        None    => test.assert(false)
