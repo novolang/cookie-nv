@@ -82,8 +82,7 @@ pub fn sign(name: Str, value: Str, k: CookieKeys) -> Str []
     match list.first(k.keys)
         Some(key) =>
             let v = bytes.from_str(value)
-            let sealed = tag(key, name, v) + v
-            b64url(sealed)
+            b64url(tag(key, name, v) + v)
         None      => ""
 
 // Verify a signed value, answering it and the index of the key that
@@ -161,11 +160,8 @@ pub fn encrypt(name: Str, value: Str, k: CookieKeys, c: CookieCipher,
     let key = list.first(k.keys) ?? bytes.zeros(0)
     if bytes.len(key) != c.key_bytes
         return Err(CookieSealBroken(name))
-    // The binding names its type.  The 0.13.0 compiler frees the answer
-    // of a call through a function value only when it does.
-    let box: Bytes = c.seal(key, nonce, bytes.from_str(name), bytes.from_str("${name}=${value}"))
-    let sealed = nonce + box
-    Ok(b64url(sealed))
+    let box = c.seal(key, nonce, bytes.from_str(name), bytes.from_str("${name}=${value}"))
+    Ok(b64url(nonce + box))
 
 // Decrypt a value, answering it and the index of the key that opened
 // it.
@@ -185,9 +181,7 @@ pub fn decrypt(name: Str, sealed: Str, k: CookieKeys,
     var i = 0
     for key in k.keys
         if bytes.len(key) == c.key_bytes
-            // Typed for the same reason as the binding in `encrypt`.
-            let opened: ?Bytes = c.open_box(key, nonce, bytes.from_str(name), box)
-            match opened
+            match c.open_box(key, nonce, bytes.from_str(name), box)
                 Some(plain) =>
                     let text = bytes.to_str(plain)
                     if str.starts_with(text, head)
@@ -237,17 +231,12 @@ pub fn master_len() -> Int []
 // ── Helpers ──────────────────────────────────────────────────────────
 
 // The HMAC-SHA256 tag over a name, `=` and a value.
-//
-// Here and below, a `Bytes` sum is bound to a name before it is passed
-// to a call; the 0.13.0 compiler leaks a sum written as the argument.
 fn tag(key: Bytes, name: Str, value: Bytes) -> Bytes
-    let msg = bytes.from_str("${name}=") + value
-    hashing.hmac_sha256(key, msg, bytes.zeros(hashing.SHA256_DIGEST_BYTES))
+    hashing.hmac_sha256(key, bytes.from_str("${name}=") + value, bytes.zeros(hashing.SHA256_DIGEST_BYTES))
 
 // One HKDF-Expand block of 32 bytes.
 fn expand(prk: Bytes, label: Str) -> Bytes
-    let info = bytes.from_str(label) + bytes.u8(1)
-    hashing.hmac_sha256(prk, info, bytes.zeros(hashing.SHA256_DIGEST_BYTES))
+    hashing.hmac_sha256(prk, bytes.from_str(label) + bytes.u8(1), bytes.zeros(hashing.SHA256_DIGEST_BYTES))
 
 // Bytes as base64url without padding.
 fn b64url(b: Bytes) -> Str
