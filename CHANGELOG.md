@@ -5,7 +5,7 @@ All notable changes to cookie-nv are recorded here. The format is
 package follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 with the pre-1.0 rule that a breaking change bumps the MINOR number.
 
-## 0.1.0 — 2026-09-27
+## 0.1.0 — 2026-09-28
 
 The first implementation of the interface published as 0.0.1: the
 attribute rules, both parsers, the writers, the storage model and
@@ -54,13 +54,9 @@ These change what code written against 0.0.x observes.
 
 ### Toolchain
 
-- The toolchain floor is 0.13.0, and the dependencies are calendar-nv
-  `^0.2.0` and crypto-nv `^0.1.6`.
-- Two bindings name their type, `let box: Bytes = c.seal(...)` in
-  `encrypt` and `let opened: ?Bytes = c.open_box(...)` in `decrypt`,
-  and each `Bytes` sum is bound to a name before it is passed to a
-  call.  The 0.13.0 compiler frees these shapes and leaks the shorter
-  ones.
+- The toolchain floor is 0.14.0, and the dependencies are calendar-nv
+  `^0.2.0` and crypto-nv `^0.1.6`.  The bodies target novo 0.14.0 and
+  carry no workaround for a compiler defect.
 
 ## 0.0.2 — 2026-09-15
 
