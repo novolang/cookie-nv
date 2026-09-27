@@ -17,6 +17,12 @@ fn every_attribute() -> cookieattr.CookieAttrs
                   secure: true, http_only: true, same_site: CookieSameSiteNone,
                   partitioned: true }
 
+// What `quote_value` answers, or `<refused>`.
+fn quoted(v: Str) -> Str
+    match cookiewrite.quote_value(v)
+        Ok(q)  => q
+        Err(_) => "<refused>"
+
 @test
 fn test_a_set_cookie_is_written_in_the_rfcs_order() [io]
     test.case("RFC 6265bis section 3.1: SID=31d4d96e407aad42")
@@ -116,8 +122,8 @@ fn test_deleting_a_cookie_keeps_its_domain_and_path() [io]
 @test
 fn test_the_request_header_and_the_value_check() [io]
     test.case("a value that is in the grammar is answered as written")
-    test.assert(cookiewrite.quote_value("abc") == Ok("abc"))
-    test.assert(cookiewrite.quote_value("\"abc\"") == Ok("\"abc\""))
+    test.assert(quoted("abc") == "abc")
+    test.assert(quoted("\"abc\"") == "\"abc\"")
 
     test.case("quoting makes no byte legal, so a value outside the grammar is refused")
     match cookiewrite.quote_value("a b")
