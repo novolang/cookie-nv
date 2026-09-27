@@ -18,8 +18,7 @@ fn first_error(h: Str) -> ?cookieattr.CookieError
 
 // How many attributes the lenient reading of a header ignored.
 fn ignored(h: Str) -> Int
-    let pair = cookieparse.parse_set_cookie_lenient(h)
-    list.len(pair.1)
+    list.len(cookieparse.parse_set_cookie_lenient(h).1)
 
 @test
 fn test_a_cookie_header_is_spans_and_never_fails() [io]

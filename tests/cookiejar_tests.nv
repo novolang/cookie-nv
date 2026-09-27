@@ -25,15 +25,13 @@ fn at_time(y: Int, m: Int, d: Int, h: Int, mi: Int, s: Int) -> civil.CivilDateTi
 // it was when the cookie is refused.
 fn put(j: cookiejar.CookieJar, header: Str, host: Str, path_value: Str,
        now: civil.CivilDateTime) -> cookiejar.CookieJar
-    let pair = cookieparse.parse_set_cookie_lenient(header)
-    match cookiejar.store(j, pair.0, host, path_value, now)
+    match cookiejar.store(j, cookieparse.parse_set_cookie_lenient(header).0, host, path_value, now)
         Ok(next) => next
         Err(_)   => j
 
 // Whether storing one header is refused.
 fn refused(j: cookiejar.CookieJar, header: Str, host: Str) -> Bool
-    let pair = cookieparse.parse_set_cookie_lenient(header)
-    match cookiejar.store(j, pair.0, host, "/", at(2026, 1, 1))
+    match cookiejar.store(j, cookieparse.parse_set_cookie_lenient(header).0, host, "/", at(2026, 1, 1))
         Ok(_)  => false
         Err(_) => true
 
