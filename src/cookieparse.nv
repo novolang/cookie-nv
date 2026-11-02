@@ -288,7 +288,7 @@ fn read_set_cookie(h: Str, strict: Bool) -> (CookieSpec, [cookieattr.CookieError
     if name == "" and value == ""
         list.push(errs, CookieMalformed(0))
         return (nothing, errs)
-    let attrs = read_attrs(h, end, errs)
+    let attrs = read_attrs(h, end, var errs)
     if strict
         list.append(errs, cookieattr.check_attrs(name, attrs))
         match value_error(value)

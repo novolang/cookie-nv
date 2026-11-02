@@ -1,6 +1,6 @@
 [package]
 name        = "cookie-nv"
-version     = "0.1.0"
+version     = "0.1.1"
 description = "RFC 6265bis in both directions: a `Cookie` header parsed into name and value spans over the caller's own string, a `Set-Cookie` parsed strictly or as a browser reads it, written with the `__Host-` and `__Secure-` prefix rules refused rather than warned about, a cookie jar with the storage model's domain, path, expiry and ordering rules over a time the caller passes in, and signed and encrypted cookies with the cipher supplied by the caller."
 license     = "Apache-2.0"
 
@@ -24,7 +24,7 @@ category    = "web"
 tags        = ["cookie", "set-cookie", "rfc6265", "http", "session", "samesite", "signed-cookies", "sans-io"]
 repository  = "https://github.com/novolang/cookie-nv"
 maintainers = ["novo-lang"]
-novo        = ">= 0.14.0"
+novo        = ">= 0.21.1"
 
 # A library: no `main`, so `novo pkg build` type-checks and
 # effect-checks every module under `src/` and writes no binary.

@@ -81,7 +81,7 @@ fn test_a_header_can_be_sized_and_written_into_a_buffer() [io]
     test.case("the buffer form appends into a cursor the caller owns")
     var dst = bytes.cursor_be(bytes.zeros(128))
     dst.put_u8('>')
-    match cookiewrite.set_cookie_into("sid", "abc", cookieattr.defaults(), dst)
+    match cookiewrite.set_cookie_into("sid", "abc", cookieattr.defaults(), var dst)
         Ok(n)  =>
             test.assert(n == 47)
             test.assert(dst.pos() == 48)
@@ -91,7 +91,7 @@ fn test_a_header_can_be_sized_and_written_into_a_buffer() [io]
 
     test.case("a refused cookie writes nothing")
     var none = bytes.cursor_be(bytes.zeros(16))
-    match cookiewrite.set_cookie_into("", "abc", cookieattr.defaults(), none)
+    match cookiewrite.set_cookie_into("", "abc", cookieattr.defaults(), var none)
         Ok(_)  => test.assert(false)
         Err(_) => test.assert(none.pos() == 0)
 

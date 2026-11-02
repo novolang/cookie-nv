@@ -10,6 +10,7 @@ use std.list
 use civil
 use cookieparse
 use cookiejar
+use cookieattr
 
 // A few entries of the Public Suffix List, enough for the tests.
 fn known_suffix(d: Str) -> Bool
